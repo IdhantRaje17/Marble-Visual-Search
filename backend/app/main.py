@@ -15,6 +15,7 @@ from app.models import tile
 from app.models import tile_image
 from app.models import inventory
 from app.models import search_log
+from app.models import cart as cart_models  # registers Cart/CartItem/Order/OrderItem tables
 
 # Import routers
 from app.routers import auth
@@ -23,6 +24,7 @@ from app.routers import tiles
 from app.routers import search
 from app.routers.inventory import router as inv_router
 from app.routers.inventory import loc_router
+from app.routers import cart as cart_router
 from ai.search import get_model
 
 # Ensure pgvector extension and index exist (PostgreSQL)
@@ -77,6 +79,7 @@ app.include_router(tiles.public_router)
 app.include_router(inv_router)
 app.include_router(loc_router)
 app.include_router(search.router)
+app.include_router(cart_router.router)
 
 
 @app.on_event("startup")

@@ -1,21 +1,33 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Search, Package, LayoutDashboard, LogOut, Boxes, History } from "lucide-react";
+import { Search, Package, LayoutDashboard, LogOut, Boxes, History, ShoppingCart } from "lucide-react";
 import { removeToken } from "@/lib/auth";
 import api from "@/lib/api";
+import { useState, useEffect } from "react";
 
 const links = [
-  { href: "/dashboard",           label: "Dashboard",  icon: LayoutDashboard },
-  { href: "/dashboard/search",    label: "Search Tile", icon: Search },
-  { href: "/dashboard/tiles",     label: "Tiles",       icon: Boxes },
-  { href: "/dashboard/inventory", label: "Inventory",   icon: Package },
-  { href: "/dashboard/history",  label: "Search History", icon: History },
+  { href: "/dashboard",           label: "Dashboard",      icon: LayoutDashboard },
+  { href: "/dashboard/search",    label: "Search Tile",    icon: Search },
+  { href: "/dashboard/tiles",     label: "Tiles",          icon: Boxes },
+  { href: "/dashboard/inventory", label: "Inventory",      icon: Package },
+  { href: "/dashboard/history",   label: "Search History", icon: History },
+  { href: "/dashboard/cart",      label: "Cart",           icon: ShoppingCart },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router   = useRouter();
+  const [cartCount, setCartCount] = useState(0);
+
+  // Refresh cart badge on every navigation
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/api/cart")
+      .then((res) => { if (!cancelled) setCartCount(res.data.item_count ?? 0); })
+      .catch(() => {/* silently ignore — badge just won't show */});
+    return () => { cancelled = true; };
+  }, [pathname]);
 
   const handleLogout = async () => {
     try { await api.post("/api/auth/logout"); } catch {}
@@ -53,7 +65,14 @@ export default function Sidebar() {
                           }`}
             >
               <Icon size={18} />
-              {label}
+              <span className="flex-1">{label}</span>
+              {href === "/dashboard/cart" && cartCount > 0 && (
+                <span className="ml-auto bg-emerald-500 text-white text-xs
+                                  font-bold px-1.5 py-0.5 rounded-full
+                                  min-w-[20px] text-center leading-none">
+                  {cartCount > 99 ? "99+" : cartCount}
+                </span>
+              )}
             </Link>
           );
         })}

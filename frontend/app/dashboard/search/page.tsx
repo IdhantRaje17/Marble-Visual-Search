@@ -1,8 +1,9 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import api from "@/lib/api";
 import TileResultCard from "@/components/TileResultCard";
 import { Upload, Camera, Loader2 } from "lucide-react";
+import { loadSearchSession, saveSearchSession, clearSearchSession } from "@/lib/searchSession";
 
 type SearchResult = {
   tile_id: number;
@@ -24,11 +25,32 @@ export default function SearchPage() {
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("fresh") === "1") {
+      clearSearchSession();
+      window.history.replaceState({}, "", "/dashboard/search");
+      return;
+    }
+    const saved = loadSearchSession();
+    if (!saved) return;
+    setPreview(saved.preview);
+    setResults((saved.results || []) as SearchResult[]);
+    setSearched(Boolean(saved.searched));
+    setResponseMs(saved.responseMs);
+  }, []);
+
   const handleFile = (file: File) => {
-    setPreview(URL.createObjectURL(file));
-    setResults([]);
-    setSearched(false);
-    setError("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : null;
+      setPreview(dataUrl);
+      setResults([]);
+      setSearched(false);
+      setError("");
+      saveSearchSession({ preview: dataUrl, results: [], searched: false, responseMs: null });
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSearch = async () => {
@@ -62,6 +84,12 @@ export default function SearchPage() {
       setResults(matches);
       setResponseMs(res.data.response_time_ms);
       setSearched(true);
+      saveSearchSession({
+        preview,
+        results: matches,
+        searched: true,
+        responseMs: res.data.response_time_ms ?? null,
+      });
     } catch (err: unknown) {
       const axiosError = err as { response?: { data?: { detail?: unknown } }; message?: string };
       const msg = axiosError.response?.data?.detail || axiosError.message || "Search failed";

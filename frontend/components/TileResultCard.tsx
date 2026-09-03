@@ -1,5 +1,8 @@
+"use client";
+
 interface TileResult {
   tile_id: number;
+
   sku: string;
   name: string;
   confidence: number;
@@ -143,12 +146,14 @@ export default function TileResultCard({
         </span>
       </div>
 
-      <a
-        href={`/dashboard/tiles/${result.tile_id}`}
-        className="mt-4 inline-flex text-sm font-semibold text-cyan-700 hover:text-cyan-900"
-      >
-        View product details →
-      </a>
+      <div className="flex items-center justify-end mt-4">
+        <a
+          href={`/dashboard/tiles/${result.tile_id}?from=search`}
+          className="text-sm font-semibold text-cyan-700 hover:text-cyan-900 transition"
+        >
+          View Details →
+        </a>
+      </div>
     </div>
   );
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
-import { ArrowLeft, Loader2, Package } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft, Loader2, Package, ShoppingCart, Check, Minus, Plus } from "lucide-react";
 import api from "@/lib/api";
 
 type Category = { name: string };
@@ -35,7 +36,109 @@ const statusStyles: Record<string, string> = {
   INVENTORY_NOT_CONFIGURED: "bg-stone-100 text-stone-700",
 };
 
-export default function TileDetailsPage({ params }: { params: Promise<{ tileId: string }> }) {
+function TileDetailsNav({ error }: { error?: boolean }) {
+  const searchParams = useSearchParams();
+  const fromSearch = searchParams.get("from") === "search";
+
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {fromSearch ? (
+        <Link
+          href="/dashboard/search"
+          className="inline-flex items-center gap-2 text-sm text-stone-600 hover:text-stone-900"
+        >
+          <ArrowLeft size={16} /> Back to Search Results
+        </Link>
+      ) : (
+        <Link
+          href="/dashboard/tiles"
+          className="inline-flex items-center gap-2 text-sm text-stone-600 hover:text-stone-900"
+        >
+          <ArrowLeft size={16} /> Back to catalog
+        </Link>
+      )}
+      {!error && (
+        <Link
+          href="/dashboard/search?fresh=1"
+          className="inline-flex items-center justify-center rounded-lg border border-stone-300 px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50 w-full sm:w-auto"
+        >
+          Search New Tile
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function AddToCartControls({ tile }: { tile: Tile }) {
+  const stockQty = tile.inventory?.quantity ?? tile.stock_quantity ?? null;
+  const outOfStock = stockQty === 0;
+  const [quantity, setQuantity] = useState(1);
+  const [addState, setAddState] = useState<"idle" | "loading" | "added" | "error">("idle");
+
+  const handleAddToCart = async () => {
+    setAddState("loading");
+    try {
+      await api.post("/api/cart/add", { tile_id: tile.id, quantity });
+      setAddState("added");
+      setTimeout(() => setAddState("idle"), 1500);
+    } catch {
+      setAddState("error");
+      setTimeout(() => setAddState("idle"), 2000);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+          className="w-8 h-8 rounded-lg border border-stone-200 flex items-center justify-center text-stone-600 hover:bg-stone-100"
+          aria-label="Decrease quantity"
+        >
+          <Minus size={14} />
+        </button>
+        <span className="text-sm font-semibold text-stone-700 w-8 text-center">{quantity}</span>
+        <button
+          type="button"
+          onClick={() => setQuantity((q) => q + 1)}
+          className="w-8 h-8 rounded-lg border border-stone-200 flex items-center justify-center text-stone-600 hover:bg-stone-100"
+          aria-label="Increase quantity"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+      <button
+        onClick={handleAddToCart}
+        disabled={addState === "loading" || outOfStock}
+        className={`inline-flex items-center justify-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-xl border transition-all duration-200 w-full sm:w-auto disabled:cursor-not-allowed ${
+          addState === "added"
+            ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+            : addState === "error"
+            ? "bg-red-50 border-red-300 text-red-600"
+            : outOfStock
+            ? "bg-stone-50 border-stone-200 text-stone-400"
+            : "bg-stone-800 border-stone-800 text-white hover:bg-stone-700"
+        }`}
+      >
+        {addState === "loading" && <Loader2 size={14} className="animate-spin" />}
+        {addState === "added" && <Check size={14} />}
+        {addState === "idle" && <ShoppingCart size={14} />}
+        {addState === "loading"
+          ? "Adding…"
+          : addState === "added"
+          ? "Added!"
+          : addState === "error"
+          ? "Failed — retry"
+          : outOfStock
+          ? "Out of stock"
+          : "Add to Cart"}
+      </button>
+    </div>
+  );
+}
+
+function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> }) {
   const [tile, setTile] = useState<Tile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -48,14 +151,14 @@ export default function TileDetailsPage({ params }: { params: Promise<{ tileId: 
   }, [params]);
 
   if (loading) return <div className="flex min-h-[50vh] items-center justify-center text-stone-500"><Loader2 className="animate-spin mr-2" /> Loading product...</div>;
-  if (error || !tile) return <div className="space-y-4"><Link href="/dashboard/tiles" className="inline-flex items-center gap-2 text-sm text-stone-600"><ArrowLeft size={16} /> Back to catalog</Link><p className="rounded-lg bg-red-50 p-4 text-red-700">{error || "Product not found."}</p></div>;
+  if (error || !tile) return <div className="space-y-4"><TileDetailsNav error /><p className="rounded-lg bg-red-50 p-4 text-red-700">{error || "Product not found."}</p></div>;
 
   const status = tile.stock_status || (tile.inventory ? (tile.inventory.quantity === 0 ? "OUT_OF_STOCK" : tile.low_stock ? "LOW_STOCK" : "IN_STOCK") : "INVENTORY_NOT_CONFIGURED");
   const images = tile.images || [];
 
   return (
     <div className="max-w-5xl space-y-6">
-      <Link href="/dashboard/tiles" className="inline-flex items-center gap-2 text-sm text-stone-600 hover:text-stone-900"><ArrowLeft size={16} /> Back to catalog</Link>
+      <TileDetailsNav />
       <div className="grid gap-8 lg:grid-cols-[1.05fr_1fr]">
         <section className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
           <div className="aspect-square overflow-hidden rounded-lg bg-stone-100">
@@ -70,8 +173,17 @@ export default function TileDetailsPage({ params }: { params: Promise<{ tileId: 
           </div>
           <div className="flex flex-wrap gap-3 text-sm text-stone-700"><span>Dimensions: {tile.width_cm || "?"} x {tile.height_cm || "?"} x {tile.thickness_cm || "?"} cm</span>{tile.price_per_sqm != null && <span className="font-semibold">₹{tile.price_per_sqm}/sqm</span>}</div>
           <div className="flex items-center gap-3 border-t border-stone-200 pt-5"><Package size={20} className="text-stone-500" /><span className={`rounded-full px-3 py-1 text-sm font-semibold ${statusStyles[status] || statusStyles.INVENTORY_NOT_CONFIGURED}`}>{status.replaceAll("_", " ")}</span><span className="text-sm text-stone-600">{tile.inventory ? `${tile.inventory.quantity} ${tile.inventory.unit}` : "Inventory information unavailable"}</span></div>
+          <AddToCartControls tile={tile} />
         </section>
       </div>
     </div>
+  );
+}
+
+export default function TileDetailsPage({ params }: { params: Promise<{ tileId: string }> }) {
+  return (
+    <Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center text-stone-500"><Loader2 className="animate-spin mr-2" /> Loading product...</div>}>
+      <TileDetailsContent params={params} />
+    </Suspense>
   );
 }
