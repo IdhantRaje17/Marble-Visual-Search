@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 from app.schemas.category import CategoryOut, ColorFamilyOut
 from app.schemas.inventory import InventoryOut
@@ -22,17 +22,23 @@ class TileCreate(BaseModel):
 class TileUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    material_id: Optional[int] = None
-    style_id: Optional[int] = None
-    finish_id: Optional[int] = None
-    size_format_id: Optional[int] = None
-    application_id: Optional[int] = None
-    color_family_id: Optional[int] = None
-    origin_id: Optional[int] = None
-    width_cm: Optional[float] = None
-    height_cm: Optional[float] = None
-    thickness_cm: Optional[float] = None
-    price_per_sqm: Optional[float] = None
+    material_id: Optional[int] = Field(default=None, gt=0)
+    style_id: Optional[int] = Field(default=None, gt=0)
+    finish_id: Optional[int] = Field(default=None, gt=0)
+    size_format_id: Optional[int] = Field(default=None, gt=0)
+    application_id: Optional[int] = Field(default=None, gt=0)
+    color_family_id: Optional[int] = Field(default=None, gt=0)
+    origin_id: Optional[int] = Field(default=None, gt=0)
+    width_cm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    height_cm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    thickness_cm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    price_per_sqm: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def material_cannot_be_cleared(self):
+        if "material_id" in self.model_fields_set and self.material_id is None:
+            raise ValueError("material_id cannot be null")
+        return self
 
 class TileImageOut(BaseModel):
     id: int

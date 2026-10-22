@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.database import Base, engine, get_db
+from app.middleware.auth import get_current_admin
 from app.schemas.inventory import StockUpdate
 from app.services.inventory_service import update_stock as update_stock_service
 
@@ -19,6 +20,8 @@ from app.models import cart as cart_models  # registers Cart/CartItem/Order/Orde
 
 # Import routers
 from app.routers import auth
+from app.routers import admin_users
+from app.routers import dashboard
 from app.routers import categories as cat_router
 from app.routers import tiles
 from app.routers import search
@@ -73,6 +76,8 @@ app.mount("/static", StaticFiles(directory=dataset_path), name="static")
 
 # ── Routers ──────────────────────────────────────────────
 app.include_router(auth.router)
+app.include_router(admin_users.router)
+app.include_router(dashboard.router)
 app.include_router(cat_router.router)
 app.include_router(tiles.router)
 app.include_router(tiles.public_router)
@@ -99,8 +104,12 @@ def health_check():
 
 
 @app.post("/update-stock")
-def update_stock_endpoint(body: StockUpdate, db=Depends(get_db)):
-    """Public-friendly stock update endpoint for quick deployments."""
+def update_stock_endpoint(
+    body: StockUpdate,
+    db=Depends(get_db),
+    _=Depends(get_current_admin),
+):
+    """Update stock for an administrator."""
     updated = update_stock_service(
         db, body.tile_id, body.quantity, body.unit, body.low_stock_threshold
     )

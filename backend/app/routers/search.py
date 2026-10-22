@@ -1,19 +1,25 @@
 import time
+from io import BytesIO
 from fastapi import APIRouter, Depends, File, UploadFile, Query, HTTPException
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.database import get_db
-from app.middleware.auth import get_current_admin
+from app.middleware.auth import get_current_account
+from app.models.admin import Admin
 from app.models.search_log import SearchLog
 from app.services.search_service import run_visual_search
-from ai.gatekeeper import validate_tile_image
+from ai.gatekeeper import NOT_TILE, VALIDATION_UNAVAILABLE, VALID_TILE, validate_tile_image
 
 GATEKEEPER_REJECTION_MESSAGE = (
     "Please upload a valid marble, tile, or stone surface image."
 )
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+SUPPORTED_IMAGE_TYPES = {"JPEG", "PNG", "WEBP"}
 
 router = APIRouter(prefix="/api/search", tags=["Visual Search"])
 
+# ── Single-image search (original — unchanged) ────────────
 @router.post("/image")
 async def search_by_image(
     file: UploadFile = File(...),
@@ -21,19 +27,46 @@ async def search_by_image(
     material_id: Optional[int] = Query(None),
     color_family_id: Optional[int] = Query(None),
     min_confidence: float = Query(0.0, ge=0.0, le=100.0),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    account: Admin = Depends(get_current_account),
 ):
     try:
         start_time = time.time()
 
-        # Read uploaded image bytes
-        image_bytes = await file.read()
+        if file.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WebP image.")
+
+        image_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="The uploaded image is empty.")
+        if len(image_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Image must be 10 MB or smaller.")
+
+        try:
+            with Image.open(BytesIO(image_bytes)) as uploaded_image:
+                if uploaded_image.format not in SUPPORTED_IMAGE_TYPES:
+                    raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WebP image.")
+                uploaded_image.verify()
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.") from exc
 
         gatekeeper_result = validate_tile_image(image_bytes)
-        if not gatekeeper_result["is_tile"]:
+        validation_status = gatekeeper_result.get("status", VALIDATION_UNAVAILABLE)
+        if validation_status == NOT_TILE:
             raise HTTPException(
                 status_code=400,
-                detail=GATEKEEPER_REJECTION_MESSAGE,
+                detail={
+                    "status": NOT_TILE,
+                    "message": GATEKEEPER_REJECTION_MESSAGE,
+                },
+            )
+        if validation_status not in {VALID_TILE, VALIDATION_UNAVAILABLE}:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": VALIDATION_UNAVAILABLE,
+                    "message": "Tile validation unavailable. Search is blocked until validation is available.",
+                },
             )
 
         # Run visual search
@@ -48,25 +81,24 @@ async def search_by_image(
 
         # Extract results and validation info
         results = search_response.get("results", [])
-        validation = search_response.get("validation", {})
+        validation = {
+            "status": validation_status,
+            "is_tile": validation_status == VALID_TILE,
+            "score": gatekeeper_result.get("score") if validation_status == VALID_TILE else None,
+            "message": (
+                "Tile image validated."
+                if validation_status == VALID_TILE
+                else "Tile validation was unavailable; visual matches are unverified."
+            ),
+        }
         error_msg = search_response.get("error", None)
 
         response_time_ms = int((time.time() - start_time) * 1000)
 
-        # Check if image is not a tile
-        if error_msg and not validation.get("is_tile", False):
-            return {
-                "results": [],
-                "total_found": 0,
-                "response_time_ms": response_time_ms,
-                "status": "rejected_not_tile",
-                "validation": validation,
-                "error": error_msg
-            }
-
         # Log the search
         top_match = results[0] if results else None
         log = SearchLog(
+            account_id       = account.id,
             query_image_url = "uploaded_image",
             matched_tile_id  = top_match["tile_id"] if top_match else None,
             confidence       = top_match["confidence"] / 100 if top_match else None,
@@ -104,13 +136,15 @@ async def search_by_image(
             "hint": "restart backend and run seed_tiles.py if missing embeddings"
         })
 
+
 @router.get("/history")
 def search_history(
     limit: int = Query(50),
     db: Session = Depends(get_db),
-    _=Depends(get_current_admin)
+    account: Admin = Depends(get_current_account),
 ):
     logs = db.query(SearchLog)\
+             .filter(SearchLog.account_id == account.id)\
              .order_by(SearchLog.searched_at.desc())\
              .limit(limit).all()
     return logs

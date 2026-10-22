@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
-import { setToken } from "@/lib/auth";
+import { setRole, setToken } from "@/lib/auth";
 import Link from "next/link";
 
 export default function LoginPage() {
@@ -19,6 +19,7 @@ export default function LoginPage() {
     try {
       const res = await api.post("/api/auth/login", { email, password });
       setToken(res.data.access_token);
+      setRole(res.data.role);
       router.push("/dashboard");
     } catch {
       setError("Invalid email or password");
@@ -88,7 +89,7 @@ export default function LoginPage() {
         {/* Register Link */}
         <div className="text-center mt-6">
           <p className="text-stone-600 text-sm">
-            Don't have an account?{" "}
+            Don&apos;t have an account?{" "}
             <Link href="/register" className="text-stone-800 font-medium hover:underline">
               Register here
             </Link>

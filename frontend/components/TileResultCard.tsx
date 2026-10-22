@@ -2,10 +2,11 @@
 
 interface TileResult {
   tile_id: number;
-
   sku: string;
   name: string;
+  is_active?: boolean | null;
   confidence: number;
+  vote_count?: number; // how many uploaded images matched this tile
   location: {
     warehouse?: string;
     aisle: string | null;
@@ -13,7 +14,7 @@ interface TileResult {
     bin: string | null;
     display?: string;
   };
-  stock: { quantity: number | null; unit: string; is_low: boolean };
+  stock: { quantity: number | null; unit: string; is_low: boolean; status?: string };
   image_url: string;
   details?: {
     material?: { name: string };
@@ -26,23 +27,37 @@ interface TileResult {
   };
 }
 
+/** Convert cosine similarity score to an honest match quality label. */
+function getMatchLabel(confidence: number): {
+  label: string;
+  colorClass: string;
+} {
+  if (confidence >= 85) {
+    return { label: "Strong Visual Match", colorClass: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+  }
+  if (confidence >= 70) {
+    return { label: "Visual Match", colorClass: "text-amber-700 bg-amber-50 border-amber-200" };
+  }
+  return { label: "Possible Match", colorClass: "text-orange-700 bg-orange-50 border-orange-200" };
+}
+
 export default function TileResultCard({
   result,
   rank,
+  totalImages,
 }: {
   result: TileResult;
   rank: number;
+  totalImages?: number;
 }) {
-  const confidenceColor =
-    result.confidence >= 85
-      ? "text-green-600 bg-green-50"
-      : result.confidence >= 70
-      ? "text-yellow-600 bg-yellow-50"
-      : "text-red-600 bg-red-50";
-
+  const { label, colorClass } = getMatchLabel(result.confidence);
   const imageUrl = result.image_url
     ? `http://localhost:8000${result.image_url}`
     : null;
+
+  // Show multi-image evidence indicator when relevant
+  const showVoteInfo =
+    totalImages && totalImages > 1 && result.vote_count !== undefined;
 
   return (
     <div
@@ -69,7 +84,7 @@ export default function TileResultCard({
                   " width='96' height='96'%3E%3Crect width='96' height='96'" +
                   " fill='%23e7e5e4'/%3E%3Ctext x='50%25' y='50%25'" +
                   " dominant-baseline='middle' text-anchor='middle'" +
-                  " font-size='24'%3E🪨%3C/text%3E%3C/svg%3E";
+                  " font-size='24'%3E%F0%9F%AA%A8%3C/text%3E%3C/svg%3E";
               }}
             />
           ) : (
@@ -94,14 +109,29 @@ export default function TileResultCard({
                 {result.name}
               </p>
               <p className="text-stone-400 text-xs">{result.sku}</p>
+              {result.is_active === false && (
+                <span className="mt-1 inline-block border border-stone-300 bg-stone-100 px-2 py-0.5 text-xs text-stone-600">
+                  Inactive catalog item
+                </span>
+              )}
             </div>
+            {/* Honest match quality label — NOT raw similarity as probability */}
             <span
-              className={`text-sm font-bold px-3 py-1 rounded-full
-                          flex-shrink-0 ml-2 ${confidenceColor}`}
+              className={`text-xs font-semibold px-2.5 py-1 rounded-full border flex-shrink-0 ml-2 ${colorClass}`}
+              title="Visual similarity score, not a probability"
             >
-              {result.confidence}% similarity
+              {label} · {result.confidence.toFixed(1)}% similarity
             </span>
           </div>
+
+          {/* Multi-image evidence badge */}
+          {showVoteInfo && (
+            <p className="text-xs text-stone-500 mt-1">
+              {result.vote_count === totalImages
+                ? `Matched across all ${totalImages} images`
+                : `Matched in ${result.vote_count} of ${totalImages} images`}
+            </p>
+          )}
 
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-stone-500">
             {result.details?.material?.name && <span>{result.details.material.name}</span>}
@@ -141,8 +171,11 @@ export default function TileResultCard({
             result.stock.is_low ? "text-red-500" : "text-green-600"
           }`}
         >
-          {result.stock.quantity == null ? "Information unavailable" : `${result.stock.quantity} ${result.stock.unit}`}
-          {result.stock.is_low && " ⚠️ Low"}
+          {result.stock.status === "INVENTORY_NOT_CONFIGURED"
+            ? "Inventory not configured"
+            : result.stock.quantity == null
+              ? "Information unavailable"
+              : `${result.stock.quantity} ${result.stock.unit}${result.stock.status ? ` · ${result.stock.status.replaceAll("_", " ").toLowerCase()}` : ""}`}
         </span>
       </div>
 

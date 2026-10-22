@@ -1,24 +1,36 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Search, Package, LayoutDashboard, LogOut, Boxes, History, ShoppingCart } from "lucide-react";
-import { removeToken } from "@/lib/auth";
+import { Search, Package, LayoutDashboard, LogOut, Boxes, History, ShoppingCart, Users } from "lucide-react";
+import { type AccountRole, removeToken } from "@/lib/auth";
 import api from "@/lib/api";
 import { useState, useEffect } from "react";
 
-const links = [
-  { href: "/dashboard",           label: "Dashboard",      icon: LayoutDashboard },
-  { href: "/dashboard/search",    label: "Search Tile",    icon: Search },
-  { href: "/dashboard/tiles",     label: "Tiles",          icon: Boxes },
-  { href: "/dashboard/inventory", label: "Inventory",      icon: Package },
-  { href: "/dashboard/history",   label: "Search History", icon: History },
-  { href: "/dashboard/cart",      label: "Cart",           icon: ShoppingCart },
+const sharedLinks = [
+  { href: "/dashboard/search",  label: "Search Tile",    icon: Search },
+  { href: "/dashboard/history", label: "Search History", icon: History },
+  { href: "/dashboard/cart",    label: "Cart",           icon: ShoppingCart },
 ];
 
-export default function Sidebar() {
+const adminLinks = [
+  { href: "/dashboard",           label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/tiles",     label: "Catalog",   icon: Boxes },
+  { href: "/dashboard/inventory", label: "Inventory", icon: Package },
+];
+
+export default function Sidebar({ role }: { role: AccountRole }) {
   const pathname = usePathname();
   const router   = useRouter();
   const [cartCount, setCartCount] = useState(0);
+  const links = role === "user"
+    ? sharedLinks
+    : [
+        ...adminLinks,
+        ...(role === "super_admin"
+          ? [{ href: "/dashboard/users", label: "User Management", icon: Users }]
+          : []),
+        ...sharedLinks,
+      ];
 
   // Refresh cart badge on every navigation
   useEffect(() => {
@@ -44,7 +56,7 @@ export default function Sidebar() {
           <span className="text-2xl">🪨</span>
           <div>
             <p className="font-bold text-white">Marble AI</p>
-            <p className="text-xs text-stone-400">Admin Panel</p>
+            <p className="text-xs text-stone-400">{role === "user" ? "Tile Search" : "Admin Workspace"}</p>
           </div>
         </div>
       </div>

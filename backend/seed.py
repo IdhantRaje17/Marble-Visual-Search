@@ -19,26 +19,32 @@ Base.metadata.create_all(bind=engine)
 
 
 def seed_admin():
+    email = os.getenv("MARBLE_ADMIN_EMAIL")
+    password = os.getenv("MARBLE_ADMIN_PASSWORD")
+    name = os.getenv("MARBLE_ADMIN_NAME", "Marble Administrator")
+    if not email or not password:
+        print("Admin bootstrap skipped; set MARBLE_ADMIN_EMAIL and MARBLE_ADMIN_PASSWORD to create one")
+        return
+
     db = SessionLocal()
 
-    existing = db.query(Admin).filter(Admin.email == "admin@marble.com").first()
+    existing = db.query(Admin).filter(Admin.email == email).first()
     if existing:
-        print("Admin already exists")
+        print("Account already exists; existing role and status preserved")
         db.close()
         return
 
     admin = Admin(
         name="Super Admin",
-        email="admin@marble.com",
-        password_hash=hash_password("admin123"),
+        email=email,
+        password_hash=hash_password(password),
+        role="admin",
         is_active=True
     )
 
     db.add(admin)
     db.commit()
-    print("✅ Admin created successfully")
-    print("   Email:    admin@marble.com")
-    print("   Password: admin123")
+    print("Admin created successfully")
     db.close()
 
 

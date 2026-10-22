@@ -27,7 +27,7 @@ class CartItem(Base):
 
     id       = Column(Integer, primary_key=True, index=True)
     cart_id  = Column(Integer, ForeignKey("carts.id"), nullable=False)
-    tile_id  = Column(Integer, ForeignKey("tiles.id"), nullable=False)
+    tile_id  = Column(Integer, ForeignKey("tiles.id"), nullable=True)   # nullable: tile may be deleted
     quantity = Column(Integer, default=1, nullable=False)
     added_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -54,7 +54,7 @@ class OrderItem(Base):
 
     id         = Column(Integer, primary_key=True, index=True)
     order_id   = Column(Integer, ForeignKey("orders.id"), nullable=False)
-    tile_id    = Column(Integer, ForeignKey("tiles.id"), nullable=False)
+    tile_id    = Column(Integer, ForeignKey("tiles.id"), nullable=True)   # nullable: tile may be deleted
     quantity   = Column(Integer, nullable=False)
     unit_price = Column(Float, nullable=True)   # snapshot of price_per_sqm at checkout
 

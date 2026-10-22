@@ -23,7 +23,6 @@ import os
 from typing import List, Dict, Tuple
 from ai.preprocess import preprocess_image
 from ai.embed import load_model, get_embedding
-from ai.tile_classifier import validate_uploaded_image
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,6 +45,30 @@ def cosine_similarity(vec1: list, vec2: list) -> float:
     a = np.array(vec1)
     b = np.array(vec2)
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+def _stock_payload(inventory):
+    if inventory is None:
+        return {
+            "quantity": None,
+            "unit": "pieces",
+            "is_low": False,
+            "status": "INVENTORY_NOT_CONFIGURED",
+        }
+
+    quantity = inventory.quantity
+    if quantity <= 0:
+        status = "OUT_OF_STOCK"
+    elif quantity <= inventory.low_stock_threshold:
+        status = "LOW_STOCK"
+    else:
+        status = "IN_STOCK"
+    return {
+        "quantity": quantity,
+        "unit": inventory.unit,
+        "is_low": status == "LOW_STOCK" or status == "OUT_OF_STOCK",
+        "status": status,
+    }
 
 
 def _query_embedding(model, processor, image_input, use_tta: bool = False) -> np.ndarray:
@@ -92,17 +115,18 @@ def validate_image_is_tile(image_input, min_confidence: float = 0.50) -> Tuple[b
         - is_valid: True if it's a tile, False if rejected
         - validation_result: contains confidence, message, etc
     """
-    try:
-        validation_result = validate_uploaded_image(image_input, min_confidence)
-        is_valid = validation_result.get("is_valid", True)
-        
-        logger.info(f"Tile validation - Is Tile: {is_valid}, Confidence: {validation_result.get('confidence', 0)}%")
-        
-        return is_valid, validation_result
-    except Exception as e:
-        logger.warning(f"Tile validation error (allowing image): {e}")
-        # On error, allow the image (fail-open)
-        return True, {"is_valid": True, "is_tile": True, "confidence": 100.0, "message": ""}
+    from ai.gatekeeper import VALIDATION_UNAVAILABLE, VALID_TILE, validate_tile_image
+
+    validation = validate_tile_image(image_input)
+    is_valid = validation.get("status") == VALID_TILE
+    score = validation.get("score")
+    return is_valid, {
+        "status": validation.get("status", VALIDATION_UNAVAILABLE),
+        "is_valid": is_valid,
+        "is_tile": is_valid,
+        "confidence": score * 100 if score is not None else None,
+        "message": validation.get("message", "Tile validation unavailable."),
+    }
 
 # ── Main Search Function ─────────────────────────────────
 def search_tile(
@@ -260,13 +284,10 @@ def search_tile(
                 "tile_id": tile_id,
                 "sku": tile.sku if tile else None,
                 "name": tile.name if tile else None,
+                "is_active": tile.is_active if tile else None,
                 "confidence": round(confidence * 100, 2),
                 "location": build_location_payload(location),
-                "stock": {
-                    "quantity": inventory.quantity if inventory else 0,
-                    "unit": inventory.unit if inventory else "pieces",
-                    "is_low": (inventory.quantity <= inventory.low_stock_threshold) if inventory else False,
-                },
+                "stock": _stock_payload(inventory),
                 "image_url": image.image_url if image else None,
             })
 
@@ -307,13 +328,10 @@ def search_tile(
                         "tile_id": tile_id,
                         "sku": tile.sku if tile else None,
                         "name": tile.name if tile else None,
+                        "is_active": tile.is_active if tile else None,
                         "confidence": round(confidence * 100, 2),
                         "location": build_location_payload(location),
-                        "stock": {
-                            "quantity": inventory.quantity if inventory else 0,
-                            "unit": inventory.unit if inventory else "pieces",
-                            "is_low": (inventory.quantity <= inventory.low_stock_threshold) if inventory else False,
-                        },
+                        "stock": _stock_payload(inventory),
                         "image_url": image.image_url if image else None,
                     })
                     if len(reranked_results) >= top_k:
@@ -417,13 +435,10 @@ def search_tile(
             "tile_id": tile_id,
             "sku": tile.sku if tile else None,
             "name": tile.name if tile else None,
+            "is_active": tile.is_active if tile else None,
             "confidence": round(confidence * 100, 2),
             "location": build_location_payload(location),
-            "stock": {
-                "quantity": inventory.quantity if inventory else 0,
-                "unit": inventory.unit if inventory else "pieces",
-                "is_low": (inventory.quantity <= inventory.low_stock_threshold) if inventory else False,
-            },
+            "stock": _stock_payload(inventory),
             "image_url": image.image_url if image else None,
         })
 

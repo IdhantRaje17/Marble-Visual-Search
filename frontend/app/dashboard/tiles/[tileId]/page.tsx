@@ -3,31 +3,84 @@
 import { useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Loader2, Package, ShoppingCart, Check, Minus, Plus } from "lucide-react";
+import axios from "axios";
+import { ArrowLeft, Loader2, Package, ShoppingCart, Check, Minus, Plus, Pencil, Save, X } from "lucide-react";
 import api from "@/lib/api";
+import { getRole } from "@/lib/auth";
 
-type Category = { name: string };
+type Category = { id: number; name: string; is_active?: boolean; hex_code?: string | null };
 type Tile = {
   id: number;
   sku: string;
   name: string;
-  description?: string;
-  width_cm?: number;
-  height_cm?: number;
-  thickness_cm?: number;
-  price_per_sqm?: number;
+  description?: string | null;
+  width_cm?: number | null;
+  height_cm?: number | null;
+  thickness_cm?: number | null;
+  price_per_sqm?: number | null;
   material?: Category;
   style?: Category;
   finish?: Category;
   size_format?: Category;
   application?: Category;
   color_family?: Category;
+  origin?: Category;
   inventory?: { quantity: number; unit: string; low_stock_threshold: number } | null;
   stock_quantity?: number | null;
   stock_status?: string;
   low_stock?: boolean;
   images?: { id: number; image_url: string; is_primary: boolean }[];
 };
+
+type TileCategories = {
+  materials: Category[];
+  styles: Category[];
+  finishes: Category[];
+  applications: Category[];
+  colors: Category[];
+  origins: Category[];
+};
+
+type TileEditForm = {
+  description: string;
+  material_id: string;
+  style_id: string;
+  finish_id: string;
+  application_id: string;
+  color_family_id: string;
+  origin_id: string;
+  width_cm: string;
+  height_cm: string;
+  thickness_cm: string;
+  price_per_sqm: string;
+};
+
+type CategoryField =
+  | "material_id"
+  | "style_id"
+  | "finish_id"
+  | "application_id"
+  | "color_family_id"
+  | "origin_id";
+
+const createEditForm = (tile: Tile): TileEditForm => ({
+  description: tile.description ?? "",
+  material_id: tile.material?.id?.toString() ?? "",
+  style_id: tile.style?.id?.toString() ?? "",
+  finish_id: tile.finish?.id?.toString() ?? "",
+  application_id: tile.application?.id?.toString() ?? "",
+  color_family_id: tile.color_family?.id?.toString() ?? "",
+  origin_id: tile.origin?.id?.toString() ?? "",
+  width_cm: tile.width_cm?.toString() ?? "",
+  height_cm: tile.height_cm?.toString() ?? "",
+  thickness_cm: tile.thickness_cm?.toString() ?? "",
+  price_per_sqm: tile.price_per_sqm?.toString() ?? "",
+});
+
+const editOptions = (options: Category[], current?: Category) =>
+  current && !options.some((option) => option.id === current.id)
+    ? [current, ...options]
+    : options;
 
 const statusStyles: Record<string, string> = {
   IN_STOCK: "bg-emerald-100 text-emerald-800",
@@ -142,6 +195,13 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
   const [tile, setTile] = useState<Tile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [canEdit, setCanEdit] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [loadingEditOptions, setLoadingEditOptions] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [categories, setCategories] = useState<TileCategories | null>(null);
+  const [editForm, setEditForm] = useState<TileEditForm | null>(null);
+  const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
     params.then(({ tileId }) => api.get(`/api/tiles/${tileId}`)
@@ -149,6 +209,123 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
       .catch(() => setError("Product details could not be loaded."))
       .finally(() => setLoading(false)));
   }, [params]);
+
+  useEffect(() => {
+    const role = getRole();
+    setCanEdit(role === "admin" || role === "super_admin");
+  }, []);
+
+  const startEditing = async () => {
+    if (!canEdit || !tile) return;
+    setLoadingEditOptions(true);
+    setFeedback(null);
+    try {
+      const response = await api.get<TileCategories>("/api/categories/all");
+      setCategories(response.data);
+      setEditForm(createEditForm(tile));
+      setIsEditing(true);
+    } catch {
+      setFeedback({ type: "error", message: "Edit options could not be loaded. Please try again." });
+    } finally {
+      setLoadingEditOptions(false);
+    }
+  };
+
+  const updateEditField = (field: keyof TileEditForm, value: string) => {
+    setEditForm((current) => current ? { ...current, [field]: value } : current);
+  };
+
+  const handleSaveEdit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canEdit || !tile || !editForm) return;
+    setFeedback(null);
+
+    const width = editForm.width_cm.trim() === "" ? null : Number(editForm.width_cm);
+    const height = editForm.height_cm.trim() === "" ? null : Number(editForm.height_cm);
+    const thickness = editForm.thickness_cm.trim() === "" ? null : Number(editForm.thickness_cm);
+    const price = editForm.price_per_sqm.trim() === "" ? null : Number(editForm.price_per_sqm);
+    const dimensions = [width, height, thickness];
+
+    if (!editForm.material_id) {
+      setFeedback({ type: "error", message: "Material is required." });
+      return;
+    }
+    if (dimensions.some((value) => value !== null && (!Number.isFinite(value) || value <= 0))) {
+      setFeedback({ type: "error", message: "Dimensions must be positive numbers or left empty." });
+      return;
+    }
+    if (price !== null && (!Number.isFinite(price) || price < 0)) {
+      setFeedback({ type: "error", message: "Price must be zero or greater, or left empty." });
+      return;
+    }
+
+    const optionalId = (value: string) => value ? Number(value) : null;
+    setSavingEdit(true);
+    try {
+      const response = await api.put<Tile>(`/api/tiles/${tile.id}`, {
+        description: editForm.description.trim() || null,
+        material_id: Number(editForm.material_id),
+        style_id: optionalId(editForm.style_id),
+        finish_id: optionalId(editForm.finish_id),
+        application_id: optionalId(editForm.application_id),
+        color_family_id: optionalId(editForm.color_family_id),
+        origin_id: optionalId(editForm.origin_id),
+        width_cm: width,
+        height_cm: height,
+        thickness_cm: thickness,
+        price_per_sqm: price,
+      });
+      setTile(response.data);
+      setEditForm(null);
+      setIsEditing(false);
+      setFeedback({ type: "success", message: "Tile details saved." });
+    } catch (saveError) {
+      const detail = axios.isAxiosError<{ detail?: unknown }>(saveError)
+        ? saveError.response?.data?.detail
+        : null;
+      const validationMessages = Array.isArray(detail)
+        ? detail.flatMap((entry: unknown) =>
+            typeof entry === "object"
+              && entry !== null
+              && "msg" in entry
+              && typeof entry.msg === "string"
+              ? [entry.msg]
+              : []
+          )
+        : [];
+      setFeedback({
+        type: "error",
+        message: typeof detail === "string"
+          ? detail
+          : validationMessages.join(" ") || "Tile details could not be saved. Please try again.",
+      });
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const renderCategoryField = (
+    label: string,
+    field: CategoryField,
+    options: Category[],
+    current?: Category,
+    required = false,
+  ) => editForm && (
+    <label className="block space-y-1.5 text-sm">
+      <span className="font-medium text-stone-700">{label}{required ? " *" : ""}</span>
+      <select
+        value={editForm[field]}
+        onChange={(event) => updateEditField(field, event.target.value)}
+        required={required}
+        className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-stone-800"
+      >
+        <option value="">{required ? "Select material" : "Not specified"}</option>
+        {editOptions(options, current).map((option) => (
+          <option key={option.id} value={option.id}>{option.name}</option>
+        ))}
+      </select>
+    </label>
+  );
 
   if (loading) return <div className="flex min-h-[50vh] items-center justify-center text-stone-500"><Loader2 className="animate-spin mr-2" /> Loading product...</div>;
   if (error || !tile) return <div className="space-y-4"><TileDetailsNav error /><p className="rounded-lg bg-red-50 p-4 text-red-700">{error || "Product not found."}</p></div>;
@@ -167,15 +344,121 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
           {images.length > 1 && <div className="mt-3 grid grid-cols-5 gap-2">{images.slice(0, 5).map((image) => <img key={image.id} src={`http://localhost:8000${image.image_url}`} alt="" className="aspect-square rounded border border-stone-200 object-cover" />)}</div>}
         </section>
         <section className="space-y-6">
-          <div><p className="font-mono text-sm text-stone-500">{tile.sku}</p><h1 className="mt-1 text-3xl font-bold text-stone-900">{tile.name}</h1><p className="mt-3 text-stone-600">{tile.description || "No description available."}</p></div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            {[['Material', tile.material?.name], ['Style', tile.style?.name], ['Finish', tile.finish?.name], ['Size', tile.size_format?.name], ['Application', tile.application?.name], ['Color', tile.color_family?.name]].map(([label, value]) => <div key={label} className="rounded-lg bg-stone-50 p-3"><p className="text-xs text-stone-500">{label}</p><p className="mt-1 font-medium text-stone-800">{value || "Not specified"}</p></div>)}
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-sm text-stone-500">{tile.sku}</p>
+              <h1 className="mt-1 text-3xl font-bold text-stone-900">{tile.name}</h1>
+              <p className="mt-3 text-stone-600">{tile.description?.trim() || "Not specified"}</p>
+            </div>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={startEditing}
+                disabled={loadingEditOptions || isEditing}
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-stone-300 px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loadingEditOptions ? <Loader2 size={15} className="animate-spin" /> : <Pencil size={15} />}
+                {loadingEditOptions ? "Loading..." : "Edit"}
+              </button>
+            )}
           </div>
-          <div className="flex flex-wrap gap-3 text-sm text-stone-700"><span>Dimensions: {tile.width_cm || "?"} x {tile.height_cm || "?"} x {tile.thickness_cm || "?"} cm</span>{tile.price_per_sqm != null && <span className="font-semibold">₹{tile.price_per_sqm}/sqm</span>}</div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            {[
+              ["Material", tile.material?.name],
+              ["Style", tile.style?.name],
+              ["Finish", tile.finish?.name],
+              ["Size", tile.size_format?.name],
+              ["Application", tile.application?.name],
+              ["Color", tile.color_family?.name],
+              ["Origin", tile.origin?.name],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg bg-stone-50 p-3">
+                <p className="text-xs text-stone-500">{label}</p>
+                <p className="mt-1 font-medium text-stone-800">{value || "Not specified"}</p>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1 text-sm text-stone-700">
+            <p>Dimensions: {tile.width_cm ?? "Not specified"} x {tile.height_cm ?? "Not specified"} x {tile.thickness_cm ?? "Not specified"} cm</p>
+            <p>Price: {tile.price_per_sqm == null ? "Not specified" : `₹${tile.price_per_sqm}/sqm`}</p>
+          </div>
           <div className="flex items-center gap-3 border-t border-stone-200 pt-5"><Package size={20} className="text-stone-500" /><span className={`rounded-full px-3 py-1 text-sm font-semibold ${statusStyles[status] || statusStyles.INVENTORY_NOT_CONFIGURED}`}>{status.replaceAll("_", " ")}</span><span className="text-sm text-stone-600">{tile.inventory ? `${tile.inventory.quantity} ${tile.inventory.unit}` : "Inventory information unavailable"}</span></div>
           <AddToCartControls tile={tile} />
         </section>
       </div>
+      {feedback && !isEditing && (
+        <p
+          role={feedback.type === "error" ? "alert" : "status"}
+          className={`rounded-lg p-3 text-sm ${feedback.type === "error" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}
+        >
+          {feedback.message}
+        </p>
+      )}
+      {isEditing && editForm && categories && (
+        <form onSubmit={handleSaveEdit} className="space-y-5 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-stone-900">Edit tile details</h2>
+          {feedback?.type === "error" && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{feedback.message}</p>}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {renderCategoryField("Material", "material_id", categories.materials, tile.material, true)}
+            {renderCategoryField("Style", "style_id", categories.styles, tile.style)}
+            {renderCategoryField("Finish", "finish_id", categories.finishes, tile.finish)}
+            {renderCategoryField("Application", "application_id", categories.applications, tile.application)}
+            {renderCategoryField("Color", "color_family_id", categories.colors, tile.color_family)}
+            {renderCategoryField("Origin", "origin_id", categories.origins, tile.origin)}
+          </div>
+          <label className="block space-y-1.5 text-sm">
+            <span className="font-medium text-stone-700">Description</span>
+            <textarea
+              value={editForm.description}
+              onChange={(event) => updateEditField("description", event.target.value)}
+              rows={3}
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-stone-800"
+            />
+          </label>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {([
+              ["Width (cm)", "width_cm"],
+              ["Height (cm)", "height_cm"],
+              ["Thickness (cm)", "thickness_cm"],
+              ["Price per sqm (₹)", "price_per_sqm"],
+            ] as const).map(([label, field]) => (
+              <label key={field} className="block space-y-1.5 text-sm">
+                <span className="font-medium text-stone-700">{label}</span>
+                <input
+                  type="number"
+                  step="any"
+                  min={field === "price_per_sqm" ? "0" : "0.000001"}
+                  value={editForm[field]}
+                  onChange={(event) => updateEditField(field, event.target.value)}
+                  className="w-full rounded-lg border border-stone-300 px-3 py-2 text-stone-800"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-wrap justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setIsEditing(false);
+                setEditForm(null);
+                setFeedback(null);
+              }}
+              disabled={savingEdit}
+              className="inline-flex items-center gap-2 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+            >
+              <X size={15} /> Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={savingEdit}
+              className="inline-flex items-center gap-2 rounded-lg bg-stone-800 px-4 py-2 text-sm font-semibold text-white hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingEdit ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+              {savingEdit ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

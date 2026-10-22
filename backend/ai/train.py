@@ -96,7 +96,7 @@ def train():
     # Load base CLIP model
     model, _, preprocess = open_clip.create_model_and_transforms(
         "ViT-B-32", pretrained="openai"
-    )
+A    )
     model = model.to(DEVICE)
 
     # Only fine-tune the visual encoder
@@ -158,4 +158,3 @@ def train():
     print(f"\nModel saved to {MODEL_SAVE_PATH}")
 
 if __name__ == "__main__":
-    train()

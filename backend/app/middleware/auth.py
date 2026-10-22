@@ -13,13 +13,7 @@ bearer_scheme = HTTPBearer()
 
 # --- Password Utilities ---
 def hash_password(password: str) -> str:
-    try:
-        return pwd_context.hash(password)
-    except Exception as e:
-        # Fallback for environments where bcrypt backend is misconfigured.
-        import hashlib
-        print(f"Warning: bcrypt hash fallback: {e}")
-        return hashlib.sha256(password.encode()).hexdigest()
+    return pwd_context.hash(password)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -49,7 +43,7 @@ def decode_access_token(token: str) -> dict:
         return None
 
 # --- Route Dependency ---
-def get_current_admin(
+def get_current_account(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db)
 ) -> Admin:
@@ -62,15 +56,37 @@ def get_current_admin(
             detail="Invalid or expired token"
         )
 
-    admin = db.query(Admin).filter(
+    account = db.query(Admin).filter(
         Admin.email == payload.get("sub"),
         Admin.is_active == True
     ).first()
 
-    if not admin:
+    if not account or account.auth_version != payload.get("ver", 0):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Admin not found or deactivated"
+            detail="Account not found, deactivated, or token revoked"
         )
 
-    return admin
+    return account
+
+
+def get_current_admin(
+    account: Admin = Depends(get_current_account),
+) -> Admin:
+    if account.role not in ("admin", "super_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+    return account
+
+
+def get_current_super_admin(
+    account: Admin = Depends(get_current_account),
+) -> Admin:
+    if account.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super administrator access required",
+        )
+    return account

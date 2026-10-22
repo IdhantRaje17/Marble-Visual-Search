@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from typing import List
 
 from app.database import get_db
-from app.middleware.auth import get_current_admin
+from app.middleware.auth import get_current_account
 from app.models.admin import Admin
 from app.models.cart import Cart, CartItem, Order, OrderItem
 from app.models.tile import Tile
@@ -70,7 +70,7 @@ def _build_cart_out(cart: Cart) -> CartOut:
 @router.get("", response_model=CartOut)
 def get_cart(
     db:    Session = Depends(get_db),
-    admin: Admin   = Depends(get_current_admin),
+    admin: Admin   = Depends(get_current_account),
 ):
     """Return (or create) the current admin's cart."""
     cart = _get_or_create_cart(db, admin.id)
@@ -83,7 +83,7 @@ def get_cart(
 def add_to_cart(
     body:  CartItemAdd,
     db:    Session = Depends(get_db),
-    admin: Admin   = Depends(get_current_admin),
+    admin: Admin   = Depends(get_current_account),
 ):
     """Add a tile to the cart, or increment its quantity if already present."""
     if body.quantity < 1:
@@ -119,7 +119,7 @@ def update_cart_item(
     item_id: int,
     body:    CartItemUpdate,
     db:      Session = Depends(get_db),
-    admin:   Admin   = Depends(get_current_admin),
+    admin:   Admin   = Depends(get_current_account),
 ):
     """Update quantity for a specific cart item."""
     if body.quantity < 1:
@@ -143,7 +143,7 @@ def update_cart_item(
 def remove_cart_item(
     item_id: int,
     db:      Session = Depends(get_db),
-    admin:   Admin   = Depends(get_current_admin),
+    admin:   Admin   = Depends(get_current_account),
 ):
     """Remove a single item from the cart."""
     cart = _get_or_create_cart(db, admin.id)
@@ -162,7 +162,7 @@ def remove_cart_item(
 @router.delete("/clear")
 def clear_cart(
     db:    Session = Depends(get_db),
-    admin: Admin   = Depends(get_current_admin),
+    admin: Admin   = Depends(get_current_account),
 ):
     """Remove all items from the cart without deleting the cart itself."""
     cart = _get_or_create_cart(db, admin.id)
@@ -174,96 +174,147 @@ def clear_cart(
 @router.post("/checkout", response_model=OrderOut)
 def checkout(
     db:    Session = Depends(get_db),
-    admin: Admin   = Depends(get_current_admin),
+    admin: Admin   = Depends(get_current_account),
 ):
     """
     Place an order from the current cart.
-    - Validates stock availability (Option A: read-only check, no deduction).
+    - Locks the cart and inventory rows to prevent duplicate orders and overselling.
+    - Deducts stock in the same transaction as order creation.
     - Creates Order + OrderItem snapshot.
     - Clears cart items on success.
     """
-    cart = _get_or_create_cart(db, admin.id)
+    try:
+        cart = db.query(Cart).filter(Cart.admin_id == admin.id).with_for_update().first()
+        if cart is None:
+            cart = _get_or_create_cart(db, admin.id)
+            raise HTTPException(status_code=400, detail="Cart is empty")
 
-    if not cart.items:
-        raise HTTPException(status_code=400, detail="Cart is empty")
+        cart_items = (
+            db.query(CartItem)
+            .options(selectinload(CartItem.tile))
+            .filter(CartItem.cart_id == cart.id)
+            .order_by(CartItem.tile_id, CartItem.id)
+            .with_for_update()
+            .all()
+        )
+        if not cart_items:
+            raise HTTPException(status_code=400, detail="Cart is empty")
 
-    # ── Stock validation (read-only, no writes to inventory) ──
-    stock_errors: List[str] = []
-    for item in cart.items:
-        tile = item.tile
-        inv  = db.query(Inventory).filter(Inventory.tile_id == item.tile_id).first()
-        if inv is None:
-            continue  # inventory not configured — allow through
-        if inv.quantity < item.quantity:
-            name = tile.name if tile else f"Tile #{item.tile_id}"
-            stock_errors.append(
-                f"'{name}': requested {item.quantity}, only {inv.quantity} in stock"
+        inventory_by_tile = {
+            inv.tile_id: inv
+            for inv in (
+                db.query(Inventory)
+                .filter(Inventory.tile_id.in_([item.tile_id for item in cart_items]))
+                .order_by(Inventory.tile_id)
+                .with_for_update()
+                .all()
+            )
+        }
+
+        stock_errors: List[str] = []
+        for item in cart_items:
+            inv = inventory_by_tile.get(item.tile_id)
+            name = item.tile.name if item.tile else f"Tile #{item.tile_id}"
+            if inv is None:
+                stock_errors.append(f"'{name}': inventory is not configured")
+            elif inv.quantity < item.quantity:
+                stock_errors.append(
+                    f"'{name}': requested {item.quantity}, only {inv.quantity} in stock"
+                )
+
+        if stock_errors:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Some items have insufficient stock",
+                    "errors": stock_errors,
+                },
             )
 
-    if stock_errors:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Some items have insufficient stock",
-                "errors": stock_errors,
-            },
+        order_items_data = []
+        total = 0.0
+        has_price = False
+        for item in cart_items:
+            tile = item.tile
+            unit_price = tile.price_per_sqm if tile else None
+            if unit_price is not None:
+                total += unit_price * item.quantity
+                has_price = True
+            order_items_data.append({
+                "tile_id": item.tile_id,
+                "quantity": item.quantity,
+                "unit_price": unit_price,
+            })
+
+        order = Order(
+            admin_id=admin.id,
+            status="placed",
+            total_amount=round(total, 2) if has_price else None,
         )
+        db.add(order)
+        db.flush()
 
-    # ── Build order snapshot ──────────────────────────────────
-    order_items_data = []
-    total = 0.0
-    has_price = False
+        for order_item_data in order_items_data:
+            db.add(OrderItem(order_id=order.id, **order_item_data))
 
-    for item in cart.items:
-        tile       = item.tile
-        unit_price = tile.price_per_sqm if tile else None
-        subtotal   = (unit_price * item.quantity) if unit_price is not None else None
-        if subtotal is not None:
-            total    += subtotal
-            has_price = True
-        order_items_data.append({
-            "tile_id":    item.tile_id,
-            "quantity":   item.quantity,
-            "unit_price": unit_price,
-        })
+        for item in cart_items:
+            inv = inventory_by_tile[item.tile_id]
+            updated = (
+                db.query(Inventory)
+                .filter(
+                    Inventory.id == inv.id,
+                    Inventory.quantity >= item.quantity,
+                )
+                .update(
+                    {Inventory.quantity: Inventory.quantity - item.quantity},
+                    synchronize_session=False,
+                )
+            )
+            if updated != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Some items have insufficient stock",
+                        "errors": [f"'{item.tile.name if item.tile else item.tile_id}': stock changed during checkout"],
+                    },
+                )
 
-    order = Order(
-        admin_id     = admin.id,
-        status       = "placed",
-        total_amount = round(total, 2) if has_price else None,
-    )
-    db.add(order)
-    db.flush()  # get order.id without full commit
+        db.query(CartItem).filter(CartItem.cart_id == cart.id).delete(
+            synchronize_session=False
+        )
+        db.commit()
+        db.refresh(order)
 
-    for od in order_items_data:
-        db.add(OrderItem(order_id=order.id, **od))
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
 
-    # ── Clear cart items ──────────────────────────────────────
-    db.query(CartItem).filter(CartItem.cart_id == cart.id).delete()
-
-    db.commit()
-    db.refresh(order)
-
-    # ── Build response ────────────────────────────────────────
     order_items_out = []
-    for oi in order.items:
-        tile    = oi.tile
-        sub     = (oi.unit_price * oi.quantity) if oi.unit_price is not None else None
+    for order_item in order.items:
+        tile = order_item.tile
+        subtotal = (
+            order_item.unit_price * order_item.quantity
+            if order_item.unit_price is not None
+            else None
+        )
         order_items_out.append(OrderItemOut(
-            id         = oi.id,
-            tile_id    = oi.tile_id,
-            tile_name  = tile.name if tile else f"Tile #{oi.tile_id}",
-            tile_sku   = tile.sku  if tile else "N/A",
-            quantity   = oi.quantity,
-            unit_price = oi.unit_price,
-            subtotal   = sub,
+            id=order_item.id,
+            tile_id=order_item.tile_id,
+            tile_name=tile.name if tile else f"Tile #{order_item.tile_id}",
+            tile_sku=tile.sku if tile else "N/A",
+            quantity=order_item.quantity,
+            unit_price=order_item.unit_price,
+            subtotal=subtotal,
         ))
 
     return OrderOut(
-        id           = order.id,
-        status       = order.status,
-        total_amount = order.total_amount,
-        placed_at    = order.placed_at,
-        item_count   = sum(oi.quantity for oi in order.items),
-        items        = order_items_out,
+        id=order.id,
+        status=order.status,
+        total_amount=order.total_amount,
+        placed_at=order.placed_at,
+        item_count=sum(order_item.quantity for order_item in order.items),
+        items=order_items_out,
     )

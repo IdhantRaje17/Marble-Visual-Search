@@ -22,12 +22,24 @@ _CACHE = os.path.join(
     "model_cache",
 )
 DEFAULT_CHECKPOINT = os.path.join(_CACHE, "gatekeeper_mobilenetv3_best.pt")
+VALID_TILE = "VALID_TILE"
+NOT_TILE = "NOT_TILE"
+VALIDATION_UNAVAILABLE = "VALIDATION_UNAVAILABLE"
+UNABLE_TO_VALIDATE = VALIDATION_UNAVAILABLE
+EXPECTED_CLASS_TO_IDX = {"not_tile": 0, "tile": 1}
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 INPUT_SIZE = 224
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
+EXPECTED_PREPROCESSING = {
+    "input_size": INPUT_SIZE,
+    "resize": "shorter_edge",
+    "crop": "center",
+    "mean": IMAGENET_MEAN,
+    "std": IMAGENET_STD,
+}
 
 _TRANSFORM = transforms.Compose([
     transforms.Resize(INPUT_SIZE),
@@ -76,7 +88,7 @@ class Gatekeeper:
         checkpoint_path = self._resolve_checkpoint_path()
         if not os.path.isfile(checkpoint_path):
             logger.warning(
-                "Gatekeeper checkpoint not found at %s — validation skipped (fail-open)",
+                "Gatekeeper checkpoint not found at %s",
                 checkpoint_path,
             )
             self._load_failed = True
@@ -86,12 +98,21 @@ class Gatekeeper:
             model = _build_model()
             checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
 
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            if not isinstance(checkpoint, dict):
+                raise ValueError("checkpoint metadata is required")
+            if checkpoint.get("class_to_idx") != EXPECTED_CLASS_TO_IDX:
+                raise ValueError("checkpoint class mapping must be {'not_tile': 0, 'tile': 1}")
+            if checkpoint.get("preprocessing") != EXPECTED_PREPROCESSING:
+                raise ValueError("checkpoint preprocessing metadata does not match inference")
+            if checkpoint.get("training_complete") is not True:
+                raise ValueError("checkpoint is not marked as a completed training run")
+
+            if "model_state_dict" in checkpoint:
                 state_dict = checkpoint["model_state_dict"]
-            elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            elif "state_dict" in checkpoint:
                 state_dict = checkpoint["state_dict"]
             else:
-                state_dict = checkpoint
+                raise ValueError("checkpoint does not contain model weights")
 
             model.load_state_dict(state_dict)
             model.to(DEVICE)
@@ -101,7 +122,7 @@ class Gatekeeper:
             return True
         except Exception as exc:
             logger.warning(
-                "Gatekeeper checkpoint could not be loaded from %s: %s — validation skipped (fail-open)",
+                "Gatekeeper checkpoint could not be loaded from %s: %s",
                 checkpoint_path,
                 exc,
             )
@@ -125,7 +146,12 @@ class Gatekeeper:
             {"is_tile": bool, "score": float}
         """
         if not self.load():
-            return {"is_tile": True, "score": 1.0}
+            return {
+                "status": UNABLE_TO_VALIDATE,
+                "is_tile": False,
+                "score": None,
+                "message": "Tile validation unavailable: a trained Gatekeeper checkpoint could not be loaded.",
+            }
 
         try:
             image = self._load_image(image_input)
@@ -133,14 +159,28 @@ class Gatekeeper:
 
             with torch.no_grad():
                 logits = self._model(tensor)
+                if logits.shape != (1, 2) or not torch.isfinite(logits).all():
+                    raise ValueError("classifier returned invalid logits")
                 probs = torch.softmax(logits, dim=1)
                 tile_score = float(probs[0, 1].item())
+                if not torch.isfinite(probs).all():
+                    raise ValueError("classifier returned invalid probabilities")
 
             is_tile = tile_score >= threshold
-            return {"is_tile": is_tile, "score": round(tile_score, 4)}
+            return {
+                "status": VALID_TILE if is_tile else NOT_TILE,
+                "is_tile": is_tile,
+                "score": round(tile_score, 4),
+                "message": "Tile validated." if is_tile else "Image was classified as not a tile.",
+            }
         except Exception as exc:
-            logger.warning("Gatekeeper inference failed: %s — validation skipped (fail-open)", exc)
-            return {"is_tile": True, "score": 1.0}
+            logger.warning("Gatekeeper inference failed: %s", exc)
+            return {
+                "status": UNABLE_TO_VALIDATE,
+                "is_tile": False,
+                "score": None,
+                "message": "Tile validation unavailable: the classifier could not validate this image.",
+            }
 
 
 _gatekeeper: Optional[Gatekeeper] = None
@@ -166,11 +206,26 @@ def validate_tile_image(image_input: Union[str, bytes, Image.Image]) -> dict:
     """
     Public API for gatekeeper validation.
 
-    When GATEKEEPER_ENABLED=false, returns pass-through without loading the model.
-    When enabled but checkpoint is missing, fails open (is_tile=True).
+    Validation is accepted only when an enabled, loaded classifier runs successfully.
     """
     if not is_gatekeeper_enabled():
-        return {"is_tile": True, "score": 1.0}
+        return {
+            "status": UNABLE_TO_VALIDATE,
+            "is_tile": False,
+            "score": None,
+            "message": "Tile validation unavailable: Gatekeeper is disabled.",
+        }
 
-    threshold = get_gatekeeper_threshold()
-    return get_gatekeeper().validate(image_input, threshold=threshold)
+    try:
+        threshold = get_gatekeeper_threshold()
+        if not 0.0 < threshold <= 1.0:
+            raise ValueError("GATEKEEPER_THRESHOLD must be greater than 0 and at most 1")
+        return get_gatekeeper().validate(image_input, threshold=threshold)
+    except Exception as exc:
+        logger.warning("Gatekeeper configuration failed: %s", exc)
+        return {
+            "status": UNABLE_TO_VALIDATE,
+            "is_tile": False,
+            "score": None,
+            "message": "Tile validation unavailable: Gatekeeper configuration is invalid.",
+        }

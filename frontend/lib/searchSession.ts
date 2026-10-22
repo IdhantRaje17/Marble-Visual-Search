@@ -1,10 +1,26 @@
 const SESSION_KEY = "visualSearchState";
 
+export type PerImageStatus = {
+  image_index: number;
+  status: "valid" | "rejected_not_tile";
+  gatekeeper_score: number | null;
+  result_count: number;
+  error?: string | null;
+  preview?: string | null; // data URL for thumbnail
+};
+
 export type SavedSearchState = {
+  // Legacy single-image fields (kept for backward compat)
   preview: string | null;
   results: unknown[];
   searched: boolean;
   responseMs: number | null;
+  // Multi-image extensions
+  previews?: (string | null)[];
+  perImageStatus?: PerImageStatus[];
+  validImageCount?: number;
+  rejectedImageCount?: number;
+  isMultiImage?: boolean;
 };
 
 export function loadSearchSession(): SavedSearchState | null {
