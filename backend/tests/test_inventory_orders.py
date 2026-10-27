@@ -22,10 +22,12 @@ from app.models.admin import Admin
 from app.models.cart import Cart, CartItem, Order, OrderItem
 from app.models.categories import Material
 from app.models.inventory import Inventory
+from app.models.search_log import SearchLog
 from app.models.tile import Tile
 from app.models.tile_image import TileEmbedding, TileImage
 from app.routers import cart as cart_router
 from app.routers import inventory as inventory_router
+from app.routers import dashboard as dashboard_router
 
 
 class TestInventoryAndOrders(unittest.TestCase):
@@ -100,6 +102,7 @@ class TestInventoryAndOrders(unittest.TestCase):
         self.app = FastAPI()
         self.app.include_router(inventory_router.router)
         self.app.include_router(cart_router.router)
+        self.app.include_router(dashboard_router.router)
 
         def override_get_db():
             session = self.SessionLocal()
@@ -153,6 +156,7 @@ class TestInventoryAndOrders(unittest.TestCase):
             json={
                 "name": "Updated tile",
                 "description": "Updated from inventory",
+                "texture": "Brushed",
                 "material_id": self.tile.material_id,
                 "width_cm": 60,
                 "height_cm": 120,
@@ -169,10 +173,138 @@ class TestInventoryAndOrders(unittest.TestCase):
         self.db.refresh(self.inventory)
         self.assertEqual(self.tile.name, "Updated tile")
         self.assertEqual(self.tile.description, "Updated from inventory")
+        self.assertEqual(self.tile.texture, "Brushed")
         self.assertEqual(self.tile.width_cm, 60)
         self.assertEqual(self.tile.price_per_sqm, 150)
         self.assertEqual(self.inventory.quantity, 9)
         self.assertEqual(self.inventory.low_stock_threshold, 3)
+
+    def test_order_history_is_limited_to_authenticated_account(self):
+        own_order = Order(admin_id=self.user.id, status="placed", total_amount=120)
+        other_order = Order(admin_id=self.admin.id, status="completed", total_amount=240)
+        self.db.add_all([own_order, other_order])
+        self.db.flush()
+        self.db.add_all([
+            OrderItem(order_id=own_order.id, tile_id=self.tile.id, quantity=1, unit_price=120),
+            OrderItem(order_id=other_order.id, tile_id=self.tile.id, quantity=2, unit_price=120),
+        ])
+        self.db.commit()
+
+        response = self.client.get(
+            "/api/cart/orders/mine",
+            headers=self.headers(self.user),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([order["id"] for order in response.json()], [own_order.id])
+        self.assertEqual(response.json()[0]["items"][0]["quantity"], 1)
+
+    def test_order_tracking_is_admin_only_and_status_filterable(self):
+        placed_order = Order(admin_id=self.user.id, status="placed", total_amount=120)
+        completed_order = Order(admin_id=self.admin.id, status="completed", total_amount=240)
+        self.db.add_all([placed_order, completed_order])
+        self.db.commit()
+
+        denied = self.client.get(
+            "/api/admin/orders",
+            headers=self.headers(self.user),
+        )
+        response = self.client.get(
+            "/api/admin/orders?status=placed",
+            headers=self.headers(self.admin),
+        )
+
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([order["id"] for order in response.json()], [placed_order.id])
+        self.assertIsNone(response.json()[0]["shipment_details"])
+
+        updated = self.client.patch(
+            f"/api/admin/orders/{placed_order.id}/tracking",
+            headers=self.headers(self.admin),
+            json={
+                "status": "dispatched",
+                "carrier": "Recorded carrier",
+                "tracking_number": "TRACK-100",
+                "dispatched_at": "2026-10-25T10:00:00Z",
+                "expected_delivery_at": "2020-01-01T10:00:00Z",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["tracking_number"], "TRACK-100")
+        filtered_after_update = self.client.get(
+            "/api/admin/orders?status=dispatched",
+            headers=self.headers(self.admin),
+        )
+        self.assertEqual(len(filtered_after_update.json()), 1)
+        self.assertEqual(filtered_after_update.json()[0]["timeline"][-1]["status"], "dispatched")
+        self.assertGreater(filtered_after_update.json()[0]["delay_seconds"], 0)
+
+    def test_analytics_marks_unrecorded_metrics_unavailable(self):
+        response = self.client.get(
+            "/api/admin/analytics",
+            headers=self.headers(self.admin),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["orders"]["production_vs_sales"]["available"])
+        self.assertFalse(payload["orders"]["search_to_quotation_to_order"]["available"])
+        self.assertFalse(payload["inventory"]["stock_aging_and_turnover"]["available"])
+        self.assertTrue(payload["orders"]["revenue_available"])
+        self.assertEqual(payload["orders"]["completed"], 0)
+        self.assertEqual(payload["orders"]["units_sold"], 0)
+        self.assertEqual(payload["orders"]["revenue"], 0)
+        self.assertIsNone(payload["orders"]["average_order_value"])
+
+    def test_analytics_excludes_placed_orders_and_counts_completed_sales(self):
+        placed = Order(admin_id=self.user.id, status="placed", total_amount=120)
+        paid = Order(admin_id=self.user.id, status="paid", total_amount=240)
+        incomplete = Order(admin_id=self.admin.id, status="completed", total_amount=None)
+        self.db.add_all([placed, paid, incomplete])
+        self.db.flush()
+        self.db.add_all([
+            OrderItem(order_id=placed.id, tile_id=self.tile.id, quantity=1, unit_price=120),
+            OrderItem(order_id=paid.id, tile_id=self.tile.id, quantity=2, unit_price=120),
+            OrderItem(order_id=incomplete.id, tile_id=self.tile.id, quantity=3, unit_price=None),
+        ])
+        self.db.add(SearchLog(matched_tile_id=self.tile.id, status="matched", confidence=0.9))
+        self.db.commit()
+
+        denied = self.client.get("/api/admin/analytics", headers=self.headers(self.user))
+        self.assertEqual(denied.status_code, 403)
+
+        payload = self.client.get(
+            "/api/admin/analytics",
+            headers=self.headers(self.admin),
+        ).json()
+        self.assertEqual(payload["orders"]["total"], 3)
+        self.assertEqual(payload["orders"]["completed"], 2)
+        self.assertEqual(payload["orders"]["units_sold"], 5)
+        self.assertFalse(payload["orders"]["revenue_available"])
+        self.assertIsNone(payload["orders"]["revenue"])
+        self.assertEqual(payload["orders"]["best_sellers"][0]["units_sold"], 5)
+        self.assertFalse(payload["orders"]["best_sellers"][0]["revenue_available"])
+        self.assertEqual(payload["orders"]["top_searched_tiles"][0]["searches"], 1)
+        self.assertNotEqual(
+            payload["orders"]["best_sellers"][0]["units_sold"],
+            payload["orders"]["top_searched_tiles"][0]["searches"],
+        )
+
+        self.db.query(OrderItem).filter(OrderItem.order_id == incomplete.id).delete()
+        self.db.delete(incomplete)
+        self.db.commit()
+        complete_payload = self.client.get(
+            "/api/admin/analytics",
+            headers=self.headers(self.admin),
+        ).json()
+        self.assertTrue(complete_payload["orders"]["revenue_available"])
+        self.assertEqual(complete_payload["orders"]["completed"], 1)
+        self.assertEqual(complete_payload["orders"]["units_sold"], 2)
+        self.assertEqual(complete_payload["orders"]["revenue"], 240)
+        self.assertEqual(complete_payload["orders"]["average_order_value"], 240)
+        self.assertEqual(complete_payload["orders"]["best_sellers"][0]["revenue"], 240)
+        self.assertEqual(complete_payload["orders"]["top_buyers"][0]["completed_orders"], 1)
 
     def test_user_cannot_edit_tile_or_inventory(self):
         response = self.client.put(

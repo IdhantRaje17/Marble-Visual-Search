@@ -17,6 +17,7 @@ interface Tile {
   sku: string;
   name: string;
   description?: string | null;
+  texture?: string | null;
   width_cm?: number | null;
   height_cm?: number | null;
   thickness_cm?: number | null;
@@ -45,6 +46,7 @@ interface Categories {
 interface RowEditForm {
   name: string;
   description: string;
+  texture: string;
   material_id: string;
   style_id: string;
   finish_id: string;
@@ -64,6 +66,7 @@ interface RowEditForm {
 const rowEditForm = (tile: Tile, item: InventoryItem): RowEditForm => ({
   name: tile.name,
   description: tile.description ?? "",
+  texture: tile.texture ?? "",
   material_id: tile.material?.id?.toString() ?? "",
   style_id: tile.style?.id?.toString() ?? "",
   finish_id: tile.finish?.id?.toString() ?? "",
@@ -91,6 +94,9 @@ export default function InventoryPage() {
   const [canEdit, setCanEdit] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [showLowOnly, setShowLowOnly] = useState(false);
+  const [filters, setFilters] = useState({
+    query: "", material: "", color: "", finish: "", texture: "", style: "", application: "",
+  });
 
   const fetchAll = async () => {
     setLoading(true);
@@ -164,6 +170,7 @@ export default function InventoryPage() {
       await api.put(`/api/inventory/${tileId}/details`, {
         name: editForm.name.trim(),
         description: editForm.description.trim() || null,
+        texture: editForm.texture.trim() || null,
         material_id: Number(editForm.material_id),
         style_id: nullableId(editForm.style_id),
         finish_id: nullableId(editForm.finish_id),
@@ -195,9 +202,19 @@ export default function InventoryPage() {
     }
   };
 
-  const filtered = showLowOnly
-    ? inventory.filter((i) => i.quantity <= i.low_stock_threshold)
-    : inventory;
+  const filtered = inventory.filter((item) => {
+    if (showLowOnly && item.quantity > item.low_stock_threshold) return false;
+    const tile = tiles[item.tile_id];
+    const includes = (value: string | undefined, filter: string) =>
+      !filter || Boolean(value?.toLowerCase().includes(filter.trim().toLowerCase()));
+    return includes(`${tile?.sku ?? ""} ${tile?.name ?? ""}`, filters.query)
+      && includes(tile?.material?.name, filters.material)
+      && includes(tile?.color_family?.name, filters.color)
+      && includes(tile?.finish?.name, filters.finish)
+      && includes(tile?.texture ?? undefined, filters.texture)
+      && includes(tile?.style?.name, filters.style)
+      && includes(tile?.application?.name, filters.application);
+  });
 
   const lowCount = inventory.filter(
     (i) => i.quantity <= i.low_stock_threshold
@@ -234,6 +251,22 @@ export default function InventoryPage() {
           {feedback.message}
         </p>
       )}
+      <section aria-label="Inventory filters" className="mb-4 grid gap-3 rounded-xl border border-stone-200 bg-white p-4 sm:grid-cols-2 lg:grid-cols-4">
+        {([
+          ["query", "SKU / tile name"],
+          ["material", "Material"],
+          ["color", "Color"],
+          ["finish", "Finish"],
+          ["texture", "Texture"],
+          ["style", "Style"],
+          ["application", "Application area"],
+        ] as const).map(([key, label]) => (
+          <label key={key} className="text-xs font-medium text-stone-600">
+            {label}
+            <input value={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.value }))} placeholder={`Filter ${label.toLowerCase()}`} className="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-normal text-stone-800" />
+          </label>
+        ))}
+      </section>
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-stone-200
@@ -388,6 +421,10 @@ export default function InventoryPage() {
                           </label>
                         );
                       })}
+                      <label className="space-y-1 text-xs text-stone-600">
+                        Texture
+                        <input value={editForm?.texture ?? ""} onChange={(event) => setEditForm((current) => current && ({ ...current, texture: event.target.value }))} placeholder="Not specified" className="w-full rounded border border-stone-300 px-2 py-1.5 text-sm" />
+                      </label>
                       <label className="space-y-1 text-xs text-stone-600 md:col-span-2 xl:col-span-3">
                         Description
                         <textarea rows={2} value={editForm?.description ?? ""} onChange={(event) => setEditForm((current) => current && ({ ...current, description: event.target.value }))} className="w-full rounded border border-stone-300 px-2 py-1.5 text-sm" />

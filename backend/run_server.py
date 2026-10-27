@@ -1,14 +1,21 @@
 #!/usr/bin/env python
+from pathlib import Path
 import subprocess
-import time
-import os
-import signal
+import sys
 
-os.chdir('d:\\MajorProject\\Ai-Marble-Tile-Inventory\\backend')
+BACKEND_DIR = Path(__file__).resolve().parent
 
-# Kill any existing uvicorn processes
-os.system('taskkill /F /IM python.exe 2>nul')
-time.sleep(2)
-
-# Start uvicorn
-subprocess.run(['python', '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8000'])
+subprocess.run(
+    [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+    ],
+    cwd=BACKEND_DIR,
+    check=True,
+)

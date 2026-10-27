@@ -106,7 +106,7 @@ export default function TilesPage() {
 
   // New tile form state
   const [form, setForm] = useState({
-    sku: "", name: "", description: "",
+    sku: "", name: "", description: "", texture: "",
     material_id: "", style_id: "", finish_id: "",
     size_format_id: "", application_id: "",
     color_family_id: "", origin_id: "",
@@ -156,6 +156,7 @@ export default function TilesPage() {
         fd.append("name", form.name);
         fd.append("material_id", String(form.material_id));
         if (form.description) fd.append("description", form.description);
+        if (form.texture) fd.append("texture", form.texture);
         [
           "style_id", "finish_id", "size_format_id", "application_id",
           "color_family_id", "origin_id", "width_cm", "height_cm",
@@ -181,7 +182,7 @@ export default function TilesPage() {
       }
       setShowForm(false);
       setForm({
-        sku: "", name: "", description: "",
+        sku: "", name: "", description: "", texture: "",
         material_id: "", style_id: "", finish_id: "",
         size_format_id: "", application_id: "",
         color_family_id: "", origin_id: "",
@@ -374,6 +375,15 @@ export default function TilesPage() {
                   className="w-full border border-stone-300 rounded-lg
                              px-3 py-2 text-sm mt-1 focus:outline-none
                              focus:ring-2 focus:ring-stone-400"
+                />
+              </div>
+              <div className="col-span-2 md:col-span-3">
+                <label className="text-xs font-medium text-stone-600">Texture</label>
+                <input
+                  value={form.texture}
+                  onChange={(e) => setForm({ ...form, texture: e.target.value })}
+                  placeholder="Not specified"
+                  className="w-full border border-stone-300 rounded-lg px-3 py-2 text-sm mt-1 focus:outline-none focus:ring-2 focus:ring-stone-400"
                 />
               </div>
 

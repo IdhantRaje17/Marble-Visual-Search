@@ -7,6 +7,7 @@ class TileCreate(BaseModel):
     sku: str
     name: str
     description: Optional[str] = None
+    texture: Optional[str] = None
     material_id: int
     style_id: Optional[int] = None
     finish_id: Optional[int] = None
@@ -22,6 +23,7 @@ class TileCreate(BaseModel):
 class TileUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    texture: Optional[str] = None
     material_id: Optional[int] = Field(default=None, gt=0)
     style_id: Optional[int] = Field(default=None, gt=0)
     finish_id: Optional[int] = Field(default=None, gt=0)
@@ -53,6 +55,7 @@ class TileOut(BaseModel):
     sku: str
     name: str
     description: Optional[str]
+    texture: Optional[str]
     width_cm: Optional[float]
     height_cm: Optional[float]
     thickness_cm: Optional[float]

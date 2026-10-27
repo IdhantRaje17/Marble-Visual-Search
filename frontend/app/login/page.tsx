@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
-import { setRole, setToken } from "@/lib/auth";
+import { setSession } from "@/lib/auth";
 import Link from "next/link";
 
 export default function LoginPage() {
@@ -18,8 +18,7 @@ export default function LoginPage() {
     setError("");
     try {
       const res = await api.post("/api/auth/login", { email, password });
-      setToken(res.data.access_token);
-      setRole(res.data.role);
+      setSession(res.data.access_token, res.data.role, res.data.account_id);
       router.push("/dashboard");
     } catch {
       setError("Invalid email or password");

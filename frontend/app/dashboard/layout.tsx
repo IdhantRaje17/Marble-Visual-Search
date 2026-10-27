@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { type AccountRole, isAccountRole, isLoggedIn, removeToken, setRole } from "@/lib/auth";
+import { type AccountRole, isAccountRole, isLoggedIn, removeToken, setAccountId, setRole } from "@/lib/auth";
 import Sidebar from "@/components/Sidebar";
 import api from "@/lib/api";
 
@@ -27,15 +27,25 @@ export default function DashboardLayout({
           router.replace("/login");
           return;
         }
+        setAccountId(data.id);
         const accountRole: AccountRole = data.role;
         setRole(accountRole);
         setAccountRole(accountRole);
 
         const isAdminPage = pathname === "/dashboard"
           || pathname === "/dashboard/tiles"
-          || pathname.startsWith("/dashboard/inventory");
+          || pathname.startsWith("/dashboard/inventory")
+          || pathname.startsWith("/dashboard/factory")
+          || pathname.startsWith("/dashboard/order-tracking")
+          || pathname.startsWith("/dashboard/quotations");
         if (accountRole === "user" && isAdminPage) {
           router.replace("/dashboard/search");
+        }
+        if (accountRole !== "user" && pathname.startsWith("/dashboard/cart")) {
+          router.replace("/dashboard");
+        }
+        if (accountRole !== "user" && pathname.startsWith("/dashboard/orders")) {
+          router.replace("/dashboard");
         }
         if (accountRole !== "super_admin" && pathname.startsWith("/dashboard/users")) {
           router.replace("/dashboard");

@@ -14,6 +14,7 @@ type Tile = {
   sku: string;
   name: string;
   description?: string | null;
+  texture?: string | null;
   width_cm?: number | null;
   height_cm?: number | null;
   thickness_cm?: number | null;
@@ -43,6 +44,7 @@ type TileCategories = {
 
 type TileEditForm = {
   description: string;
+  texture: string;
   material_id: string;
   style_id: string;
   finish_id: string;
@@ -65,6 +67,7 @@ type CategoryField =
 
 const createEditForm = (tile: Tile): TileEditForm => ({
   description: tile.description ?? "",
+  texture: tile.texture ?? "",
   material_id: tile.material?.id?.toString() ?? "",
   style_id: tile.style?.id?.toString() ?? "",
   finish_id: tile.finish?.id?.toString() ?? "",
@@ -264,6 +267,7 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
     try {
       const response = await api.put<Tile>(`/api/tiles/${tile.id}`, {
         description: editForm.description.trim() || null,
+        texture: editForm.texture.trim() || null,
         material_id: Number(editForm.material_id),
         style_id: optionalId(editForm.style_id),
         finish_id: optionalId(editForm.finish_id),
@@ -377,13 +381,17 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
                 <p className="mt-1 font-medium text-stone-800">{value || "Not specified"}</p>
               </div>
             ))}
+            <div className="rounded-lg bg-stone-50 p-3">
+              <p className="text-xs text-stone-500">Texture</p>
+              <p className="mt-1 font-medium text-stone-800">{tile.texture?.trim() || "Not specified"}</p>
+            </div>
           </div>
           <div className="space-y-1 text-sm text-stone-700">
             <p>Dimensions: {tile.width_cm ?? "Not specified"} x {tile.height_cm ?? "Not specified"} x {tile.thickness_cm ?? "Not specified"} cm</p>
             <p>Price: {tile.price_per_sqm == null ? "Not specified" : `₹${tile.price_per_sqm}/sqm`}</p>
           </div>
           <div className="flex items-center gap-3 border-t border-stone-200 pt-5"><Package size={20} className="text-stone-500" /><span className={`rounded-full px-3 py-1 text-sm font-semibold ${statusStyles[status] || statusStyles.INVENTORY_NOT_CONFIGURED}`}>{status.replaceAll("_", " ")}</span><span className="text-sm text-stone-600">{tile.inventory ? `${tile.inventory.quantity} ${tile.inventory.unit}` : "Inventory information unavailable"}</span></div>
-          <AddToCartControls tile={tile} />
+          {getRole() === "user" && <AddToCartControls tile={tile} />}
         </section>
       </div>
       {feedback && !isEditing && (
@@ -412,6 +420,15 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
               value={editForm.description}
               onChange={(event) => updateEditField("description", event.target.value)}
               rows={3}
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-stone-800"
+            />
+          </label>
+          <label className="block space-y-1.5 text-sm">
+            <span className="font-medium text-stone-700">Texture</span>
+            <input
+              value={editForm.texture}
+              onChange={(event) => updateEditField("texture", event.target.value)}
+              placeholder="Not specified"
               className="w-full rounded-lg border border-stone-300 px-3 py-2 text-stone-800"
             />
           </label>

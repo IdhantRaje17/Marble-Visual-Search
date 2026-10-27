@@ -1,4 +1,6 @@
-const SESSION_KEY = "visualSearchState";
+import { getAccountId } from "@/lib/auth";
+
+const SESSION_KEY_PREFIX = "visualSearchState:";
 
 export type PerImageStatus = {
   image_index: number;
@@ -25,7 +27,9 @@ export type SavedSearchState = {
 
 export function loadSearchSession(): SavedSearchState | null {
   if (typeof window === "undefined") return null;
-  const raw = sessionStorage.getItem(SESSION_KEY);
+  const accountId = getAccountId();
+  if (!accountId) return null;
+  const raw = sessionStorage.getItem(`${SESSION_KEY_PREFIX}${accountId}`);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as SavedSearchState;
@@ -36,10 +40,14 @@ export function loadSearchSession(): SavedSearchState | null {
 
 export function saveSearchSession(state: SavedSearchState): void {
   if (typeof window === "undefined") return;
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+  const accountId = getAccountId();
+  if (!accountId) return;
+  sessionStorage.setItem(`${SESSION_KEY_PREFIX}${accountId}`, JSON.stringify(state));
 }
 
 export function clearSearchSession(): void {
   if (typeof window === "undefined") return;
-  sessionStorage.removeItem(SESSION_KEY);
+  const accountId = getAccountId();
+  if (accountId) sessionStorage.removeItem(`${SESSION_KEY_PREFIX}${accountId}`);
+  sessionStorage.removeItem("visualSearchState");
 }

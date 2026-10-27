@@ -13,6 +13,7 @@ class Tile(Base):
     sku           = Column(String, unique=True, index=True, nullable=False)
     name          = Column(String, nullable=False)
     description   = Column(Text, nullable=True)
+    texture       = Column(String, nullable=True)
 
     # Category FKs
     material_id   = Column(Integer, ForeignKey("materials.id"), nullable=False)

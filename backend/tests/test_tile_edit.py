@@ -128,6 +128,7 @@ class TestTileEditing(unittest.TestCase):
             headers=self.headers(account),
             json={
                 "description": "Updated description",
+                "texture": "Honed",
                 "material_id": self.new_material.id,
                 "style_id": style.id,
                 "finish_id": finish.id,
@@ -144,6 +145,7 @@ class TestTileEditing(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         updated = response.json()
         self.assertEqual(updated["description"], "Updated description")
+        self.assertEqual(updated["texture"], "Honed")
         self.assertEqual(updated["material"]["id"], self.new_material.id)
         self.assertEqual(updated["style"]["id"], style.id)
         self.assertEqual(updated["finish"]["id"], finish.id)

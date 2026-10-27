@@ -20,9 +20,12 @@ interface TileResult {
     material?: { name: string };
     finish?: { name: string };
     style?: { name: string };
-    width_cm?: number;
-    height_cm?: number;
-    thickness_cm?: number;
+    color_family?: { name: string };
+    application?: { name: string };
+    texture?: string | null;
+    width_cm?: number | null;
+    height_cm?: number | null;
+    thickness_cm?: number | null;
     price_per_sqm?: number;
   };
 }
@@ -134,12 +137,13 @@ export default function TileResultCard({
           )}
 
           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-3 text-xs text-stone-500">
-            {result.details?.material?.name && <span>{result.details.material.name}</span>}
-            {result.details?.finish?.name && <span>Finish: {result.details.finish.name}</span>}
-            {result.details?.style?.name && <span>Style: {result.details.style.name}</span>}
-            {(result.details?.width_cm || result.details?.height_cm) && (
-              <span>{result.details.width_cm || "?"} x {result.details.height_cm || "?"} cm</span>
-            )}
+            <span>Material: {result.details?.material?.name || "Not specified"}</span>
+            <span>Color: {result.details?.color_family?.name || "Not specified"}</span>
+            <span>Finish: {result.details?.finish?.name || "Not specified"}</span>
+            <span>Texture: {result.details?.texture?.trim() || "Not specified"}</span>
+            <span>Style: {result.details?.style?.name || "Not specified"}</span>
+            <span>Application: {result.details?.application?.name || "Not specified"}</span>
+            <span>Dimensions: {result.details?.width_cm ?? "Not specified"} x {result.details?.height_cm ?? "Not specified"} x {result.details?.thickness_cm ?? "Not specified"} cm</span>
             {result.details?.price_per_sqm != null && <span>₹{result.details.price_per_sqm}/sqm</span>}
           </div>
 

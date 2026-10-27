@@ -66,3 +66,12 @@ class OrderOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class OrderTrackingUpdate(BaseModel):
+    status: Optional[str] = None
+    tracking_number: Optional[str] = None
+    carrier: Optional[str] = None
+    dispatched_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    expected_delivery_at: Optional[datetime] = None

@@ -15,6 +15,7 @@ class RegisterRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    account_id: int
     admin_name: str
     admin_email: str
     role: AccountRole

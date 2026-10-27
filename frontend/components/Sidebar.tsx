@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Search, Package, LayoutDashboard, LogOut, Boxes, History, ShoppingCart, Users } from "lucide-react";
+import { Search, Package, LayoutDashboard, LogOut, Boxes, History, ShoppingCart, Users, ClipboardList, BarChart3, Truck, FileText } from "lucide-react";
 import { type AccountRole, removeToken } from "@/lib/auth";
 import api from "@/lib/api";
 import { useState, useEffect } from "react";
@@ -9,13 +9,21 @@ import { useState, useEffect } from "react";
 const sharedLinks = [
   { href: "/dashboard/search",  label: "Search Tile",    icon: Search },
   { href: "/dashboard/history", label: "Search History", icon: History },
-  { href: "/dashboard/cart",    label: "Cart",           icon: ShoppingCart },
+];
+
+const userLinks = [
+  ...sharedLinks,
+  { href: "/dashboard/cart", label: "Cart", icon: ShoppingCart },
+  { href: "/dashboard/orders", label: "My Orders", icon: ClipboardList },
 ];
 
 const adminLinks = [
   { href: "/dashboard",           label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/tiles",     label: "Catalog",   icon: Boxes },
   { href: "/dashboard/inventory", label: "Inventory", icon: Package },
+  { href: "/dashboard/factory", label: "Factory Analytics", icon: BarChart3 },
+  { href: "/dashboard/order-tracking", label: "Order Tracking", icon: Truck },
+  { href: "/dashboard/quotations", label: "Quotations", icon: FileText },
 ];
 
 export default function Sidebar({ role }: { role: AccountRole }) {
@@ -23,7 +31,7 @@ export default function Sidebar({ role }: { role: AccountRole }) {
   const router   = useRouter();
   const [cartCount, setCartCount] = useState(0);
   const links = role === "user"
-    ? sharedLinks
+    ? userLinks
     : [
         ...adminLinks,
         ...(role === "super_admin"
@@ -34,12 +42,15 @@ export default function Sidebar({ role }: { role: AccountRole }) {
 
   // Refresh cart badge on every navigation
   useEffect(() => {
+    if (role !== "user") {
+      return;
+    }
     let cancelled = false;
     api.get("/api/cart")
       .then((res) => { if (!cancelled) setCartCount(res.data.item_count ?? 0); })
       .catch(() => {/* silently ignore — badge just won't show */});
     return () => { cancelled = true; };
-  }, [pathname]);
+  }, [pathname, role]);
 
   const handleLogout = async () => {
     try { await api.post("/api/auth/logout"); } catch {}

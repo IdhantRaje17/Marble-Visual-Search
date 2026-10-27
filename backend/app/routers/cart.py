@@ -6,6 +6,7 @@ from app.database import get_db
 from app.middleware.auth import get_current_account
 from app.models.admin import Admin
 from app.models.cart import Cart, CartItem, Order, OrderItem
+from app.models.order_tracking import OrderStatusEvent
 from app.models.tile import Tile
 from app.models.inventory import Inventory
 from app.schemas.cart import (
@@ -77,6 +78,47 @@ def get_cart(
     # Eager-load items → tile → images/inventory
     db.refresh(cart)
     return _build_cart_out(cart)
+
+
+@router.get("/orders/mine")
+def get_my_orders(
+    db: Session = Depends(get_db),
+    account: Admin = Depends(get_current_account),
+):
+    """Return only orders owned by the authenticated account."""
+    orders = (
+        db.query(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.tile))
+        .options(selectinload(Order.tracking), selectinload(Order.status_events))
+        .filter(Order.admin_id == account.id)
+        .order_by(Order.placed_at.desc(), Order.id.desc())
+        .all()
+    )
+    return [{
+        "id": order.id,
+        "status": order.status,
+        "total_amount": order.total_amount,
+        "placed_at": order.placed_at,
+        "shipment": ({
+            "tracking_number": order.tracking.tracking_number,
+            "carrier": order.tracking.carrier,
+            "dispatched_at": order.tracking.dispatched_at,
+            "delivered_at": order.tracking.delivered_at,
+            "expected_delivery_at": order.tracking.expected_delivery_at,
+        } if order.tracking else None),
+        "timeline": [{
+            "status": event.status,
+            "timestamp": event.created_at,
+        } for event in order.status_events],
+        "items": [{
+            "tile_id": item.tile_id,
+            "tile_name": item.tile.name if item.tile else f"Tile #{item.tile_id}",
+            "tile_sku": item.tile.sku if item.tile else "N/A",
+            "quantity": item.quantity,
+            "unit_price": item.unit_price,
+            "subtotal": item.unit_price * item.quantity if item.unit_price is not None else None,
+        } for item in order.items],
+    } for order in orders]
 
 
 @router.post("/add", response_model=CartItemOut)
@@ -233,13 +275,14 @@ def checkout(
 
         order_items_data = []
         total = 0.0
-        has_price = False
+        has_all_prices = True
         for item in cart_items:
             tile = item.tile
             unit_price = tile.price_per_sqm if tile else None
             if unit_price is not None:
                 total += unit_price * item.quantity
-                has_price = True
+            else:
+                has_all_prices = False
             order_items_data.append({
                 "tile_id": item.tile_id,
                 "quantity": item.quantity,
@@ -249,10 +292,11 @@ def checkout(
         order = Order(
             admin_id=admin.id,
             status="placed",
-            total_amount=round(total, 2) if has_price else None,
+            total_amount=round(total, 2) if has_all_prices else None,
         )
         db.add(order)
         db.flush()
+        db.add(OrderStatusEvent(order_id=order.id, status="placed"))
 
         for order_item_data in order_items_data:
             db.add(OrderItem(order_id=order.id, **order_item_data))

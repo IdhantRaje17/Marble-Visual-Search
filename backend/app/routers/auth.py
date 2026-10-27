@@ -40,6 +40,7 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)):
     
     return TokenResponse(
         access_token=token,
+        account_id=account.id,
         admin_name=account.name,
         admin_email=account.email,
         role=account.role,
@@ -69,6 +70,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
     return TokenResponse(
         access_token=token,
+        account_id=account.id,
         admin_name=account.name,
         admin_email=account.email,
         role=account.role,

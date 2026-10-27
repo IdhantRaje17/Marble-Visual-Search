@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import api from "@/lib/api";
-import { setRole, setToken } from "@/lib/auth";
+import { setSession } from "@/lib/auth";
 import Link from "next/link";
 
 export default function RegisterPage() {
@@ -19,8 +19,7 @@ export default function RegisterPage() {
     setError("");
     try {
       const res = await api.post("/api/auth/register", { name, email, password });
-      setToken(res.data.access_token);
-      setRole(res.data.role);
+      setSession(res.data.access_token, res.data.role, res.data.account_id);
       router.push("/dashboard");
     } catch (err: unknown) {
       const responseError = err as { response?: { data?: { detail?: string } } };

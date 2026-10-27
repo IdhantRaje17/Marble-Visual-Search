@@ -10,6 +10,7 @@ class InventoryUpdate(BaseModel):
 class InventoryTileUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    texture: Optional[str] = None
     material_id: Optional[int] = Field(default=None, gt=0)
     style_id: Optional[int] = Field(default=None, gt=0)
     finish_id: Optional[int] = Field(default=None, gt=0)

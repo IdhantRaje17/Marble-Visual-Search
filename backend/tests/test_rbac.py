@@ -91,7 +91,9 @@ class TestRoleBasedAccessControl(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["role"], "user")
+        self.assertIn("account_id", response.json())
         account = self.db.query(Admin).filter_by(email="new-user@example.com").one()
+        self.assertEqual(response.json()["account_id"], account.id)
         self.assertEqual(account.role, "user")
         self.assertTrue(account.password_hash.startswith(("$2a$", "$2b$", "$2y$")))
 
@@ -103,6 +105,49 @@ class TestRoleBasedAccessControl(unittest.TestCase):
                     "/operational", headers=self.headers(account)
                 )
                 self.assertEqual(response.status_code, 200)
+
+    def test_three_concurrent_role_tokens_keep_independent_identities(self):
+        accounts = [
+            self.create_account(f"{role}@concurrent.example.com", role=role)
+            for role in ("user", "admin", "super_admin")
+        ]
+        sessions = [self.headers(account) for account in accounts]
+
+        for account, session in zip(accounts, sessions):
+            with self.subTest(role=account.role):
+                response = self.client.get("/api/auth/me", headers=session)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["id"], account.id)
+                self.assertEqual(response.json()["role"], account.role)
+
+        self.assertEqual(
+            self.client.get("/operational", headers=sessions[0]).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get("/operational", headers=sessions[1]).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get("/api/admin/users", headers=sessions[1]).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.get("/api/admin/users", headers=sessions[2]).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post("/api/auth/logout", headers=sessions[0]).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=sessions[1]).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get("/api/auth/me", headers=sessions[2]).status_code,
+            200,
+        )
 
     def test_user_cannot_use_admin_routes_even_with_forged_role_claim(self):
         account = self.create_account("user@example.com")

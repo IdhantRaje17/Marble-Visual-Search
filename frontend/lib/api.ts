@@ -1,14 +1,13 @@
 import axios from "axios";
+import { getToken, removeToken } from "@/lib/auth";
 
 const api = axios.create({
   baseURL: "http://localhost:8000",
-  withCredentials: true,
 });
 
 // Attach token to every request
 api.interceptors.request.use((config) => {
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const token = getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -18,8 +17,8 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem("token");
-      window.location.href = "/login";
+      removeToken();
+      if (typeof window !== "undefined") window.location.href = "/login";
     }
     return Promise.reject(err);
   }

@@ -47,6 +47,11 @@ class Order(Base):
     admin = relationship("Admin")
     items = relationship("OrderItem", back_populates="order",
                          cascade="all, delete-orphan")
+    tracking = relationship("OrderTracking", back_populates="order", uselist=False,
+                            cascade="all, delete-orphan")
+    status_events = relationship("OrderStatusEvent", back_populates="order",
+                                 cascade="all, delete-orphan",
+                                 order_by="OrderStatusEvent.created_at")
 
 
 class OrderItem(Base):

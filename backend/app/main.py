@@ -17,6 +17,8 @@ from app.models import tile_image
 from app.models import inventory
 from app.models import search_log
 from app.models import cart as cart_models  # registers Cart/CartItem/Order/OrderItem tables
+from app.models import order_tracking as order_tracking_models
+from app.models import quotation as quotation_models
 
 # Import routers
 from app.routers import auth
@@ -28,6 +30,7 @@ from app.routers import search
 from app.routers.inventory import router as inv_router
 from app.routers.inventory import loc_router
 from app.routers import cart as cart_router
+from app.routers import quotations as quotations_router
 from ai.search import get_model
 
 # Ensure pgvector extension and index exist (PostgreSQL)
@@ -64,7 +67,7 @@ app = FastAPI(title="Marble AI API", version="1.0.0")
 # Allow only local development origins with credentials.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001","https://marble-visual-search-yqhm.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,6 +88,7 @@ app.include_router(inv_router)
 app.include_router(loc_router)
 app.include_router(search.router)
 app.include_router(cart_router.router)
+app.include_router(quotations_router.router)
 
 
 @app.on_event("startup")
