@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { type AccountRole, isAccountRole, isLoggedIn, removeToken, setAccountId, setRole } from "@/lib/auth";
 import Sidebar from "@/components/Sidebar";
+import ChatbotWidget from "@/components/ChatbotWidget";
 import api from "@/lib/api";
 
 export default function DashboardLayout({
@@ -65,6 +66,7 @@ export default function DashboardLayout({
     <div className="flex min-h-screen bg-stone-50">
       <Sidebar role={role} />
       <main className="ml-0 md:ml-64 flex-1 p-4 sm:p-8 pt-20 md:pt-8">{children}</main>
+      <ChatbotWidget />
     </div>
   );
 }

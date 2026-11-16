@@ -9,6 +9,7 @@ from app.models.cart import Cart, CartItem, Order, OrderItem
 from app.models.order_tracking import OrderStatusEvent
 from app.models.tile import Tile
 from app.models.inventory import Inventory
+from app.models.inventory_movement import InventoryMovement
 from app.schemas.cart import (
     CartItemAdd, CartItemUpdate,
     CartItemOut, CartOut,
@@ -226,6 +227,8 @@ def checkout(
     - Clears cart items on success.
     """
     try:
+        if db.bind.dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         cart = db.query(Cart).filter(Cart.admin_id == admin.id).with_for_update().first()
         if cart is None:
             cart = _get_or_create_cart(db, admin.id)
@@ -322,6 +325,20 @@ def checkout(
                         "errors": [f"'{item.tile.name if item.tile else item.tile_id}': stock changed during checkout"],
                     },
                 )
+            db.add(InventoryMovement(
+                tile_id=item.tile_id,
+                tile_sku=item.tile.sku if item.tile else f"Tile #{item.tile_id}",
+                tile_name=item.tile.name if item.tile else "Unavailable tile",
+                movement_type="sale",
+                quantity=item.quantity,
+                direction=-1,
+                unit=inv.unit,
+                balance_after=inv.quantity - item.quantity,
+                reference_type="order",
+                reference_id=order.id,
+                reason="Completed checkout stock deduction",
+                created_by=admin.id,
+            ))
 
         db.query(CartItem).filter(CartItem.cart_id == cart.id).delete(
             synchronize_session=False

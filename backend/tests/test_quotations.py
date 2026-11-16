@@ -19,10 +19,12 @@ from app.database import Base, get_db
 from app.middleware.auth import create_access_token
 from app.models.admin import Admin
 from app.models.cart import Order
-from app.models.categories import Material, SizeFormat
+from app.models.categories import Material, SizeFormat  # noqa: F401
 from app.models.inventory import Inventory
+from app.models.order_tracking import OrderTracking, OrderStatusEvent  # noqa: F401 – registers mappers
 from app.models.quotation import Quotation
 from app.models.tile import Tile
+from app.models.tile_image import TileImage, TileEmbedding  # noqa: F401 – registers mapper for Tile.images
 from app.routers import quotations as quotations_router
 
 
@@ -166,6 +168,28 @@ class TestQuotations(unittest.TestCase):
         )
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json()["grand_total"], 708)
+
+    def test_catalog_list_returns_existing_active_tiles_and_multi_line_quote(self):
+        quoted = self.client.post(
+            "/api/quotations",
+            headers=self.headers(self.admin),
+            json={
+                "client_name": "Multi-line Buyer",
+                "gst_rate": 18,
+                "items": [
+                    {"tile_id": self.priced.id, "quantity": 2, "area_sqm": 1.5, "rate_per_sqm": 200},
+                    {"tile_id": self.unpriced.id, "quantity": 3, "area_sqm": 0.5, "rate_per_sqm": 80},
+                ],
+            },
+        )
+        self.assertEqual(quoted.status_code, 201, quoted.text)
+        payload = quoted.json()
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertEqual(payload["subtotal"], 720)
+        self.assertEqual(payload["gst_amount"], 129.6)
+        self.assertEqual(payload["grand_total"], 849.6)
+        self.db.expire_all()
+        self.assertEqual(self.db.query(Inventory).filter_by(tile_id=self.priced.id).one().quantity, 20)
 
     def test_quotation_rejects_missing_tiles_and_does_not_invent_prices(self):
         response = self.client.post(

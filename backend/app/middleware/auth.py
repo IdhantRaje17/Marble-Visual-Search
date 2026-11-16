@@ -13,19 +13,31 @@ bearer_scheme = HTTPBearer()
 
 # --- Password Utilities ---
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    import bcrypt
+    import hashlib
+
+    prehashed = hashlib.sha256(password.encode()).hexdigest()
+    return bcrypt.hashpw(prehashed.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    import bcrypt
     import hashlib
-    
-    # If hashed is a SHA256 hex (65 chars hex string), use SHA256 comparison
+
+    # Preserve support for legacy SHA256-only password records.
     if len(hashed) == 64 and all(c in '0123456789abcdef' for c in hashed):
         return hashlib.sha256(plain.encode()).hexdigest() == hashed
-    
-    # Otherwise try bcrypt
+
+    prehashed = hashlib.sha256(plain.encode()).hexdigest()
     try:
-        return pwd_context.verify(plain, hashed)
+        if bcrypt.checkpw(prehashed.encode(), hashed.encode()):
+            return True
+    except Exception:
+        pass
+
+    # Preserve support for legacy plaintext bcrypt hashes.
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
         return False
 

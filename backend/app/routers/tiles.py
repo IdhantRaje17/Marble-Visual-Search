@@ -171,7 +171,7 @@ def list_tiles(
             Tile.name.ilike(f"%{search}%") | Tile.sku.ilike(f"%{search}%")
         )
 
-    return query.offset(skip).limit(limit).all()
+    return query.order_by(Tile.id.asc()).offset(skip).limit(limit).all()
 
 # ── Get Single Tile ──────────────────────────────────────
 @router.get("/{tile_id}", response_model=TileOut)

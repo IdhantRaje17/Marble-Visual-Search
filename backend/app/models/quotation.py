@@ -19,6 +19,8 @@ class Quotation(Base):
         String, unique=True, nullable=False, default=_temp_quotation_number
     )
     created_by = Column(Integer, ForeignKey("admins.id"), nullable=False)
+    search_id = Column(Integer, ForeignKey("search_logs.id", ondelete="SET NULL"), nullable=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
     client_name = Column(String, nullable=False)
     company_name = Column(String, nullable=True)
     project_name = Column(String, nullable=True)

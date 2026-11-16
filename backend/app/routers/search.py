@@ -8,6 +8,7 @@ from app.database import get_db
 from app.middleware.auth import get_current_account
 from app.models.admin import Admin
 from app.models.search_log import SearchLog
+from app.models.tile import Tile
 from app.services.search_service import run_visual_search
 from ai.gatekeeper import NOT_TILE, VALIDATION_UNAVAILABLE, VALID_TILE, validate_tile_image
 
@@ -143,8 +144,26 @@ def search_history(
     db: Session = Depends(get_db),
     account: Admin = Depends(get_current_account),
 ):
-    logs = db.query(SearchLog)\
-             .filter(SearchLog.account_id == account.id)\
-             .order_by(SearchLog.searched_at.desc())\
-             .limit(limit).all()
-    return logs
+    rows = db.query(
+        SearchLog,
+        Tile.sku.label("tile_sku"),
+        Tile.name.label("tile_name"),
+    ).outerjoin(
+        Tile, Tile.id == SearchLog.matched_tile_id
+    ).filter(
+        SearchLog.account_id == account.id
+    ).order_by(
+        SearchLog.searched_at.desc()
+    ).limit(limit).all()
+    return [{
+        "id": log.id,
+        "account_id": log.account_id,
+        "query_image_url": log.query_image_url,
+        "matched_tile_id": log.matched_tile_id,
+        "confidence": log.confidence,
+        "response_time_ms": log.response_time_ms,
+        "status": log.status,
+        "searched_at": log.searched_at,
+        "tile_sku": tile_sku,
+        "tile_name": tile_name,
+    } for log, tile_sku, tile_name in rows]

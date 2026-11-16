@@ -25,6 +25,8 @@ from app.models.inventory import Inventory
 from app.models.search_log import SearchLog
 from app.models.tile import Tile
 from app.models.tile_image import TileEmbedding, TileImage
+from app.models.factory import ProductionEntry
+from app.models.inventory_movement import InventoryMovement
 from app.routers import cart as cart_router
 from app.routers import inventory as inventory_router
 from app.routers import dashboard as dashboard_router
@@ -45,15 +47,12 @@ class TestInventoryAndOrders(unittest.TestCase):
             cursor.execute("PRAGMA busy_timeout=15000")
             cursor.close()
 
-        # SQLite has no SELECT FOR UPDATE; use an immediate write transaction to
-        # exercise checkout serialization in the concurrent API test.
+        # SQLite has no SELECT FOR UPDATE; keep normal transaction semantics in
+        # the test fixture so read-only auth dependencies do not acquire write locks.
         @event.listens_for(self.engine, "connect")
         def disable_implicit_transactions(connection, _):
             connection.isolation_level = None
 
-        @event.listens_for(self.engine, "begin")
-        def begin_immediate(connection):
-            connection.exec_driver_sql("BEGIN IMMEDIATE")
 
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -240,6 +239,69 @@ class TestInventoryAndOrders(unittest.TestCase):
         self.assertEqual(filtered_after_update.json()[0]["timeline"][-1]["status"], "dispatched")
         self.assertGreater(filtered_after_update.json()[0]["delay_seconds"], 0)
 
+    def test_production_movement_threshold_and_ledger_persist(self):
+        produced = self.client.post(
+            "/api/admin/production",
+            headers=self.headers(self.admin),
+            json={
+                "tile_id": self.tile.id,
+                "quantity": 7,
+                "factory_name": "Main Factory",
+                "batch_number": "BATCH-1",
+                "produced_at": "2026-11-01",
+                "notes": "Recorded production",
+            },
+        )
+        self.assertEqual(produced.status_code, 200, produced.text)
+        self.db.expire_all()
+        entry = self.db.query(ProductionEntry).one()
+        self.assertEqual(entry.quantity, 7)
+        self.assertEqual(entry.batch_number, "BATCH-1")
+        self.inventory = self.db.query(Inventory).filter_by(tile_id=self.tile.id).one()
+        self.assertEqual(self.inventory.quantity, 12)
+        receipt = self.db.query(InventoryMovement).filter_by(
+            movement_type="production_receipt",
+            tile_id=self.tile.id,
+        ).one()
+        self.assertEqual(receipt.quantity, 7)
+        self.assertEqual(receipt.direction, 1)
+        self.assertEqual(receipt.balance_after, 12)
+        self.db.commit()
+
+        movement = self.client.post(
+            "/api/inventory/movements",
+            headers=self.headers(self.admin),
+            json={
+                "tile_id": self.tile.id,
+                "movement_type": "adjustment",
+                "quantity": 2,
+                "direction": -1,
+                "reason": "Damage adjustment",
+            },
+        )
+        self.assertEqual(movement.status_code, 200, movement.text)
+        self.db.expire_all()
+        self.assertEqual(
+            self.db.query(Inventory).filter_by(tile_id=self.tile.id).one().quantity,
+            10,
+        )
+
+        threshold = self.client.put(
+            f"/api/inventory/{self.tile.id}",
+            headers=self.headers(self.admin),
+            json={"quantity": 10, "unit": "pieces", "low_stock_threshold": 3},
+        )
+        self.assertEqual(threshold.status_code, 200, threshold.text)
+        self.db.expire_all()
+        inventory = self.db.query(Inventory).filter_by(tile_id=self.tile.id).one()
+        self.assertEqual(inventory.low_stock_threshold, 3)
+        ledger = self.client.get(
+            "/api/inventory/movements",
+            headers=self.headers(self.admin),
+        )
+        self.assertEqual(ledger.status_code, 200)
+        self.assertGreaterEqual(len(ledger.json()), 2)
+
     def test_analytics_marks_unrecorded_metrics_unavailable(self):
         response = self.client.get(
             "/api/admin/analytics",
@@ -248,7 +310,9 @@ class TestInventoryAndOrders(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertFalse(payload["orders"]["production_vs_sales"]["available"])
+        self.assertTrue(payload["orders"]["production_vs_sales"]["available"])
+        self.assertEqual(payload["orders"]["production_vs_sales"]["produced_quantity"], 0)
+        self.assertEqual(payload["orders"]["production_vs_sales"]["sold_quantity"], 0)
         self.assertFalse(payload["orders"]["search_to_quotation_to_order"]["available"])
         self.assertFalse(payload["inventory"]["stock_aging_and_turnover"]["available"])
         self.assertTrue(payload["orders"]["revenue_available"])
@@ -389,6 +453,13 @@ class TestInventoryAndOrders(unittest.TestCase):
             2,
         )
         self.assertEqual(self.db.query(CartItem).count(), 0)
+        sale_movement = self.db.query(InventoryMovement).filter_by(
+            movement_type="sale",
+            tile_id=self.tile.id,
+        ).one()
+        self.assertEqual(sale_movement.quantity, 2)
+        self.assertEqual(sale_movement.direction, -1)
+        self.assertEqual(sale_movement.balance_after, 3)
         self.assertEqual(self.db.query(TileImage).filter_by(tile_id=self.tile.id).count(), 1)
         self.assertEqual(self.db.query(TileEmbedding).filter_by(tile_id=self.tile.id).count(), 1)
         self.db.commit()

@@ -54,8 +54,23 @@ export type Analytics = {
       revenue: number | null;
       revenue_available: boolean;
     }[];
-    production_vs_sales: { available: boolean; reason: string };
-    search_to_quotation_to_order: { available: boolean; reason: string };
+    production_vs_sales: {
+      available: boolean;
+      produced_quantity: number;
+      sold_quantity: number;
+      trend: { date: string; produced: number; sold: number }[];
+      reason: string;
+    };
+    search_to_quotation_to_order: {
+      available: boolean;
+      searches: number;
+      linked_searches: number;
+      linked_quotes: number;
+      linked_orders: number;
+      search_to_quote_rate: number;
+      quote_to_order_rate: number;
+      reason: string;
+    };
   };
   inventory: {
     records: number;
@@ -71,7 +86,21 @@ export type Analytics = {
       quantity: number;
       threshold: number;
     }[];
-    stock_aging_and_turnover: { available: boolean; reason: string };
+    stock_aging_and_turnover: {
+      available: boolean;
+      reason: string;
+      items: {
+        tile_id: number;
+        sku: string;
+        name: string;
+        current_stock: number;
+        average_stock: number;
+        outflow_quantity: number;
+        turnover: number;
+        stock_age_days: number | null;
+        available: boolean;
+      }[];
+    };
   };
 };
 

@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, literal
@@ -9,11 +10,16 @@ from app.database import get_db
 from app.middleware.auth import get_current_admin
 from app.models.admin import Admin
 from app.models.cart import Order, OrderItem
+from app.models.categories import Material
 from app.models.inventory import Inventory
 from app.models.search_log import SearchLog
 from app.models.tile import Tile
 from app.models.order_tracking import OrderStatusEvent, OrderTracking
+from app.models.factory import ProductionEntry
+from app.models.inventory_movement import InventoryMovement
+from app.models.quotation import Quotation, QuotationItem
 from app.schemas.cart import OrderTrackingUpdate
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/admin", tags=["Admin Analytics"])
 
@@ -54,6 +60,151 @@ def _as_date(value) -> date | None:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value)[:10])
+
+
+class ProductionCreate(BaseModel):
+    tile_id: int = Field(gt=0)
+    quantity: int = Field(gt=0)
+    factory_name: str = Field(min_length=1, max_length=200)
+    batch_number: str | None = Field(default=None, max_length=100)
+    produced_at: date
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/production")
+def create_production_entry(
+    body: ProductionCreate,
+    db: Session = Depends(get_db),
+    account: Admin = Depends(get_current_admin),
+):
+    tile = db.query(Tile).filter(Tile.id == body.tile_id, Tile.is_active.is_(True)).first()
+    if not tile:
+        raise HTTPException(status_code=422, detail="Active tile not found")
+    inv = db.query(Inventory).filter(Inventory.tile_id == tile.id).with_for_update().first()
+    if inv is None:
+        inv = Inventory(
+            tile_id=tile.id,
+            quantity=0,
+            unit="pieces",
+            low_stock_threshold=10,
+        )
+        db.add(inv)
+        db.flush()
+    entry = ProductionEntry(
+        tile_id=tile.id,
+        tile_sku=tile.sku,
+        tile_name=tile.name,
+        quantity=body.quantity,
+        factory_name=body.factory_name.strip(),
+        batch_number=body.batch_number.strip() if body.batch_number else None,
+        produced_at=body.produced_at,
+        notes=body.notes.strip() if body.notes else None,
+        created_by=account.id,
+    )
+    db.add(entry)
+    db.flush()
+    if inv is not None:
+        inv.quantity += body.quantity
+        db.add(InventoryMovement(
+            tile_id=tile.id,
+            tile_sku=tile.sku,
+            tile_name=tile.name,
+            movement_type="production_receipt",
+            quantity=body.quantity,
+            direction=1,
+            unit=inv.unit,
+            balance_after=inv.quantity,
+            reference_type="production_entry",
+            reference_id=entry.id,
+            reason=f"Production batch {entry.batch_number}" if entry.batch_number else "Production receipt",
+            occurred_at=datetime.combine(body.produced_at, datetime.min.time(), tzinfo=timezone.utc),
+            created_by=account.id,
+        ))
+    db.commit()
+    db.refresh(entry)
+    return {
+        "id": entry.id,
+        "tile_id": entry.tile_id,
+        "tile_sku": entry.tile_sku,
+        "tile_name": entry.tile_name,
+        "quantity": entry.quantity,
+        "factory_name": entry.factory_name,
+        "batch_number": entry.batch_number,
+        "produced_at": entry.produced_at.isoformat(),
+        "notes": entry.notes,
+        "inventory_receipt": inv is not None,
+    }
+
+
+@router.get("/production")
+def list_production_entries(
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    query = db.query(ProductionEntry)
+    if start_date:
+        query = query.filter(ProductionEntry.produced_at >= start_date)
+    if end_date:
+        query = query.filter(ProductionEntry.produced_at <= end_date)
+    rows = query.order_by(ProductionEntry.produced_at.desc(), ProductionEntry.id.desc()).limit(500).all()
+    return [{
+        "id": row.id,
+        "tile_id": row.tile_id,
+        "tile_sku": row.tile_sku,
+        "tile_name": row.tile_name,
+        "quantity": row.quantity,
+        "factory_name": row.factory_name,
+        "batch_number": row.batch_number,
+        "produced_at": row.produced_at.isoformat(),
+        "notes": row.notes,
+    } for row in rows]
+
+
+@router.get("/link-options")
+def analytics_link_options(
+    db: Session = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    searches = db.query(
+        SearchLog.id,
+        SearchLog.status,
+        SearchLog.searched_at,
+        Tile.sku.label("tile_sku"),
+        Tile.name.label("tile_name"),
+    ).outerjoin(
+        Tile, Tile.id == SearchLog.matched_tile_id
+    ).order_by(
+        SearchLog.searched_at.desc(), SearchLog.id.desc()
+    ).limit(500).all()
+
+    orders = db.query(
+        Order.id,
+        Order.status,
+        Order.placed_at,
+        Admin.name.label("buyer_name"),
+    ).join(
+        Admin, Admin.id == Order.admin_id
+    ).order_by(
+        Order.placed_at.desc(), Order.id.desc()
+    ).limit(500).all()
+
+    return {
+        "searches": [{
+            "id": row.id,
+            "status": row.status,
+            "searched_at": row.searched_at.isoformat() if row.searched_at else None,
+            "tile_sku": row.tile_sku,
+            "tile_name": row.tile_name,
+        } for row in searches],
+        "orders": [{
+            "id": row.id,
+            "status": row.status,
+            "placed_at": row.placed_at.isoformat() if row.placed_at else None,
+            "buyer_name": row.buyer_name,
+        } for row in orders],
+    }
 
 
 @router.get("/analytics")
@@ -136,6 +287,48 @@ def dashboard_analytics(
         *search_filters
     ).order_by(SearchLog.searched_at.desc()).limit(8).all()
 
+    production_filters = [
+        ProductionEntry.produced_at >= range_start,
+        ProductionEntry.produced_at <= range_end,
+    ]
+    produced_total = db.query(func.coalesce(func.sum(ProductionEntry.quantity), 0)).filter(
+        *production_filters
+    ).scalar() or 0
+    production_rows = db.query(
+        ProductionEntry.produced_at.label("day"),
+        func.coalesce(func.sum(ProductionEntry.quantity), 0).label("quantity"),
+    ).filter(*production_filters).group_by(ProductionEntry.produced_at).order_by(
+        ProductionEntry.produced_at
+    ).all()
+    production_by_day = {_as_date(row.day): int(row.quantity or 0) for row in production_rows}
+    production_trend = [
+        {
+            "date": (range_start + timedelta(days=offset)).isoformat(),
+            "produced": production_by_day.get(range_start + timedelta(days=offset), 0),
+            "sold": 0,
+        }
+        for offset in range((range_end - range_start).days + 1)
+    ]
+
+    linked_search_ids = db.query(func.count(func.distinct(Quotation.search_id))).filter(
+        Quotation.search_id.isnot(None),
+        date_filter(Quotation.created_at),
+    ).scalar() or 0
+    quoted_orders = db.query(func.count(func.distinct(Quotation.order_id))).filter(
+        Quotation.order_id.isnot(None),
+        date_filter(Quotation.created_at),
+    ).scalar() or 0
+    linked_quotes = db.query(func.count(Quotation.id)).filter(
+        Quotation.search_id.isnot(None),
+        date_filter(Quotation.created_at),
+    ).scalar() or 0
+    search_to_quote_rate = (
+        round(linked_quotes / searches_total * 100, 2) if searches_total else 0.0
+    )
+    quote_to_order_rate = (
+        round(quoted_orders / linked_quotes * 100, 2) if linked_quotes else 0.0
+    )
+
     order_day = func.date(Order.placed_at)
     order_filters = [date_filter(Order.placed_at)]
     order_statuses = db.query(Order.status, func.count(Order.id)).filter(
@@ -201,6 +394,72 @@ def dashboard_analytics(
     units_sold = int(db.query(func.coalesce(func.sum(OrderItem.quantity), 0)).join(
         Order, Order.id == OrderItem.order_id
     ).filter(*paid_filters).scalar() or 0)
+
+    sold_by_day_rows = db.query(
+        func.date(Order.placed_at).label("day"),
+        func.coalesce(func.sum(OrderItem.quantity), 0).label("quantity"),
+    ).join(OrderItem, OrderItem.order_id == Order.id).filter(
+        *paid_filters
+    ).group_by(func.date(Order.placed_at)).all()
+    sold_by_day = {_as_date(row.day): int(row.quantity or 0) for row in sold_by_day_rows}
+    for point in production_trend:
+        point["sold"] = sold_by_day.get(_as_date(point["date"]), 0)
+
+    movement_filters = [
+        func.date(InventoryMovement.occurred_at) >= range_start,
+        func.date(InventoryMovement.occurred_at) <= range_end,
+    ]
+    movement_rows = db.query(
+        InventoryMovement.tile_id,
+        InventoryMovement.tile_sku,
+        InventoryMovement.tile_name,
+        func.sum(InventoryMovement.quantity * InventoryMovement.direction).label("net_change"),
+        func.sum(case(
+            ((InventoryMovement.direction == -1) & (InventoryMovement.movement_type == "sale"), InventoryMovement.quantity),
+            else_=0,
+        )).label("outflows"),
+        func.max(InventoryMovement.occurred_at).label("last_movement"),
+    ).filter(*movement_filters).group_by(
+        InventoryMovement.tile_id,
+        InventoryMovement.tile_sku,
+        InventoryMovement.tile_name,
+    ).order_by(func.sum(InventoryMovement.quantity).desc()).limit(20).all()
+
+    stock_aging_items = []
+    for row in movement_rows:
+        inv = db.query(Inventory).filter(Inventory.tile_id == row.tile_id).first() if row.tile_id else None
+        if inv is None:
+            continue
+        beginning_stock = inv.quantity - int(row.net_change or 0)
+        ending_stock = inv.quantity
+        average_stock = (max(beginning_stock, 0) + max(ending_stock, 0)) / 2
+        sales_outflow = int(row.outflows or 0)
+        turnover = (
+            round(sales_outflow / average_stock, 2)
+            if average_stock > 0
+            else 0.0
+        )
+        last_receipt = db.query(func.max(InventoryMovement.occurred_at)).filter(
+            InventoryMovement.tile_id == row.tile_id,
+            InventoryMovement.direction == 1,
+            InventoryMovement.occurred_at <= datetime.now(timezone.utc),
+        ).scalar()
+        stock_age_days = None
+        if last_receipt:
+            if last_receipt.tzinfo is None:
+                last_receipt = last_receipt.replace(tzinfo=timezone.utc)
+            stock_age_days = max(0, (datetime.now(timezone.utc) - last_receipt).days)
+        stock_aging_items.append({
+            "tile_id": row.tile_id,
+            "sku": row.tile_sku,
+            "name": row.tile_name,
+            "current_stock": ending_stock,
+            "average_stock": round(average_stock, 2),
+            "outflow_quantity": sales_outflow,
+            "turnover": turnover,
+            "stock_age_days": stock_age_days,
+            "available": True,
+        })
 
     order_trend = db.query(
         order_day.label("day"),
@@ -377,14 +636,26 @@ def dashboard_analytics(
                 "revenue_available": buyer_revenues.get(row.account_id, {}).get("complete", False),
             } for row in top_buyers],
             "production_vs_sales": {
-                "available": False,
-                "reason": "Production records are not stored in the current database.",
+                "available": True,
+                "produced_quantity": produced_total,
+                "sold_quantity": units_sold,
+                "trend": production_trend,
+                "reason": (
+                    "Produced quantity comes from factory production entries; "
+                    "sold quantity comes only from completed orders."
+                ),
             },
             "search_to_quotation_to_order": {
-                "available": False,
+                "available": searches_total > 0 or linked_quotes > 0,
+                "searches": searches_total or 0,
+                "linked_searches": linked_search_ids,
+                "linked_quotes": linked_quotes,
+                "linked_orders": quoted_orders,
+                "search_to_quote_rate": search_to_quote_rate,
+                "quote_to_order_rate": quote_to_order_rate,
                 "reason": (
-                    "Quotations can be stored, but searches, quotations, and orders are not "
-                    "linked, so this conversion cannot be measured."
+                    "Rates use explicit search_id and order_id links stored on quotations. "
+                    "No historical links are inferred."
                 ),
             },
         },
@@ -403,13 +674,309 @@ def dashboard_analytics(
                 "threshold": row.low_stock_threshold,
             } for row in low_stock_items],
             "stock_aging_and_turnover": {
-                "available": False,
+                "available": bool(stock_aging_items),
+                "items": stock_aging_items,
                 "reason": (
-                    "Inventory movement history is not recorded; current stock alone "
-                    "cannot establish age or turnover."
+                    "Stock aging uses the latest positive inventory movement; turnover uses "
+                    "sales movements and opening/closing stock in the selected range."
                 ),
             },
         },
+    }
+
+
+@router.get("/factory-insights")
+def factory_insights(
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    today = date.today()
+    range_end = end_date or today
+    range_start = start_date or range_end - timedelta(days=29)
+    if range_start > range_end:
+        raise HTTPException(status_code=422, detail="start_date must be on or before end_date")
+    if (range_end - range_start).days > 365:
+        raise HTTPException(status_code=422, detail="Date range cannot exceed 366 days")
+
+    def date_filter(column):
+        return (func.date(column) >= range_start) & (func.date(column) <= range_end)
+
+    searches = int(db.query(func.count(SearchLog.id)).filter(
+        date_filter(SearchLog.searched_at)
+    ).scalar() or 0)
+    linked_search_quotes = db.query(
+        Quotation.id, Quotation.search_id,
+    ).join(SearchLog, SearchLog.id == Quotation.search_id).filter(
+        date_filter(Quotation.created_at),
+        date_filter(SearchLog.searched_at),
+    ).all()
+    linked_search_ids = {row.search_id for row in linked_search_quotes}
+    linked_quote_ids = {row.id for row in linked_search_quotes}
+
+    closed_search_quotes = db.query(
+        Quotation.id,
+        Quotation.search_id,
+        Quotation.order_id,
+    ).join(SearchLog, SearchLog.id == Quotation.search_id).join(
+        Order, Order.id == Quotation.order_id,
+    ).filter(
+        date_filter(Quotation.created_at),
+        date_filter(SearchLog.searched_at),
+        date_filter(Order.placed_at),
+        func.lower(Order.status).in_(COMPLETED_ORDER_STATUSES),
+    ).all()
+    closed_quote_ids = {row.id for row in closed_search_quotes}
+    closed_order_ids = {row.order_id for row in closed_search_quotes}
+    closed_search_ids = {row.search_id for row in closed_search_quotes}
+
+    linked_conversion_quotes = len(linked_quote_ids)
+    search_to_quote_rate = (
+        round(len(linked_search_ids) / searches * 100, 2) if searches else 0.0
+    )
+    quote_to_order_rate = (
+        round(len(closed_quote_ids) / linked_conversion_quotes * 100, 2)
+        if linked_conversion_quotes else 0.0
+    )
+    search_to_sale_rate = (
+        round(len(closed_search_ids) / searches * 100, 2) if searches else 0.0
+    )
+
+    produced_quantity = int(db.query(
+        func.coalesce(func.sum(ProductionEntry.quantity), 0)
+    ).filter(
+        ProductionEntry.produced_at >= range_start,
+        ProductionEntry.produced_at <= range_end,
+    ).scalar() or 0)
+    sold_quantity = int(db.query(
+        func.coalesce(func.sum(OrderItem.quantity), 0)
+    ).join(Order, Order.id == OrderItem.order_id).filter(
+        date_filter(Order.placed_at),
+        func.lower(Order.status).in_(COMPLETED_ORDER_STATUSES),
+    ).scalar() or 0)
+
+    receipt_rows = db.query(
+        InventoryMovement.tile_id,
+        func.max(InventoryMovement.occurred_at),
+    ).filter(
+        InventoryMovement.tile_id.isnot(None),
+        InventoryMovement.direction == 1,
+        func.date(InventoryMovement.occurred_at) <= today.isoformat(),
+    ).group_by(InventoryMovement.tile_id).all()
+    latest_receipt = {tile_id: occurred_at for tile_id, occurred_at in receipt_rows}
+    stock_categories = {
+        "fresh": [],
+        "medium": [],
+        "critical": [],
+    }
+    unaged_stock_count = 0
+    inventory_rows = db.query(Inventory, Tile).join(
+        Tile, Tile.id == Inventory.tile_id
+    ).options(selectinload(Tile.images)).filter(Inventory.quantity > 0).all()
+    for inventory, tile in inventory_rows:
+        receipt_date = _as_date(latest_receipt.get(tile.id))
+        if receipt_date is None:
+            unaged_stock_count += 1
+            continue
+        age_days = max(0, (today - receipt_date).days)
+        if age_days < 90:
+            category = "fresh"
+        elif age_days < 180:
+            category = "medium"
+        else:
+            category = "critical"
+        images = sorted(tile.images, key=lambda image: (not image.is_primary, image.id))
+        stock_categories[category].append({
+            "tile_id": tile.id,
+            "name": tile.name,
+            "sku": tile.sku,
+            "quantity": inventory.quantity,
+            "unit": inventory.unit or "pieces",
+            "stock_date": receipt_date.isoformat(),
+            "stock_age_days": age_days,
+            "image_url": images[0].image_url if images else None,
+        })
+
+    quote_order_rows = db.query(
+        Quotation.id,
+        Quotation.order_id,
+        Quotation.company_name,
+    ).join(Order, Order.id == Quotation.order_id).filter(
+        Quotation.order_id.isnot(None),
+        date_filter(Quotation.created_at),
+        date_filter(Order.placed_at),
+        func.lower(Order.status).in_(COMPLETED_ORDER_STATUSES),
+    ).all()
+    quote_ids_by_order = defaultdict(set)
+    companies_by_order = defaultdict(dict)
+    for quotation_id, order_id, company_name in quote_order_rows:
+        quote_ids_by_order[order_id].add(quotation_id)
+        if company_name and company_name.strip():
+            normalized_name = company_name.strip().casefold()
+            companies_by_order[order_id].setdefault(normalized_name, company_name.strip())
+
+    quoted_order_ids = list(quote_ids_by_order)
+    order_rows = []
+    order_item_totals = {}
+    if quoted_order_ids:
+        order_rows = db.query(
+            Order.id, Order.total_amount,
+        ).filter(Order.id.in_(quoted_order_ids)).all()
+        order_item_totals = {
+            order_id: (item_count, priced_count, float(item_revenue or 0))
+            for order_id, item_count, priced_count, item_revenue in db.query(
+                OrderItem.order_id,
+                func.count(OrderItem.id),
+                func.count(OrderItem.unit_price),
+                func.sum(OrderItem.unit_price * OrderItem.quantity),
+            ).filter(
+                OrderItem.order_id.in_(quoted_order_ids)
+            ).group_by(OrderItem.order_id).all()
+        }
+
+    order_revenues = {}
+    for order_id, total_amount in order_rows:
+        item_count, priced_count, item_revenue = order_item_totals.get(
+            order_id, (0, 0, 0.0)
+        )
+        if item_count == 0:
+            order_revenues[order_id] = (
+                float(total_amount) if total_amount is not None else None
+            )
+        elif item_count != priced_count:
+            order_revenues[order_id] = None
+        elif total_amount is not None:
+            order_revenues[order_id] = float(total_amount)
+        else:
+            order_revenues[order_id] = item_revenue
+
+    buyer_totals = {}
+    unattributed_corporate_orders = 0
+    for order_id in quoted_order_ids:
+        company_names = companies_by_order[order_id]
+        if len(company_names) != 1:
+            unattributed_corporate_orders += 1
+            continue
+        company_key, company_name = next(iter(company_names.items()))
+        totals = buyer_totals.setdefault(company_key, {
+            "company_name": company_name,
+            "order_ids": set(),
+            "revenue": 0.0,
+            "revenue_available": True,
+        })
+        totals["order_ids"].add(order_id)
+        revenue = order_revenues.get(order_id)
+        if revenue is None:
+            totals["revenue_available"] = False
+        else:
+            totals["revenue"] += revenue
+
+    top_corporate_buyers = sorted(
+        buyer_totals.values(),
+        key=lambda buyer: (
+            len(buyer["order_ids"]),
+            buyer["revenue"] if buyer["revenue_available"] else -1,
+        ),
+        reverse=True,
+    )[:5]
+
+    unambiguous_quote_ids = [
+        next(iter(quote_ids))
+        for order_id, quote_ids in quote_ids_by_order.items()
+        if len(quote_ids) == 1
+    ]
+    top_materials = []
+    if unambiguous_quote_ids:
+        material_expression = func.coalesce(QuotationItem.material, Material.name)
+        material_rows = db.query(
+            material_expression.label("material"),
+            func.sum(QuotationItem.quantity * QuotationItem.area_sqm).label("volume_sqm"),
+            func.sum(QuotationItem.line_total).label("revenue"),
+        ).join(
+            Quotation, Quotation.id == QuotationItem.quotation_id
+        ).outerjoin(
+            Tile, Tile.id == QuotationItem.tile_id
+        ).outerjoin(
+            Material, Material.id == Tile.material_id
+        ).filter(
+            Quotation.id.in_(unambiguous_quote_ids),
+            material_expression.isnot(None),
+            func.trim(material_expression) != "",
+        ).group_by(material_expression).order_by(
+            func.sum(QuotationItem.quantity * QuotationItem.area_sqm).desc()
+        ).limit(5).all()
+        top_materials = [{
+            "material": row.material,
+            "volume_sqm": round(float(row.volume_sqm or 0), 2),
+            "revenue": float(row.revenue or 0),
+        } for row in material_rows]
+
+    return {
+        "date_range": {
+            "start_date": range_start.isoformat(),
+            "end_date": range_end.isoformat(),
+        },
+        "production_vs_sales": {
+            "produced_quantity": produced_quantity,
+            "sold_quantity": sold_quantity,
+        },
+        "dead_stock": {
+            "tile_count": sum(
+                item["stock_age_days"] > 180
+                for item in stock_categories["critical"]
+            ),
+            "age_days": 180,
+        },
+        "conversion": {
+            "searches": searches,
+            "linked_searches": len(linked_search_ids),
+            "quotations": linked_conversion_quotes,
+            "closed_quotations": len(closed_quote_ids),
+            "closed_orders": len(closed_order_ids),
+            "closed_searches": len(closed_search_ids),
+            "search_to_quotation_rate": search_to_quote_rate,
+            "quotation_to_order_rate": quote_to_order_rate,
+            "search_to_sale_rate": search_to_sale_rate,
+        },
+        "stock_aging": {
+            "categories": [{
+                "key": "fresh",
+                "label": "Fresh",
+                "range": "<90 days",
+                "items": stock_categories["fresh"],
+            }, {
+                "key": "medium",
+                "label": "Medium",
+                "range": "90-179 days",
+                "items": stock_categories["medium"],
+            }, {
+                "key": "critical",
+                "label": "Critical",
+                "range": "180+ days",
+                "items": stock_categories["critical"],
+            }],
+            "unaged_tile_count": unaged_stock_count,
+            "note": (
+                "Stock dates use each tile's latest recorded positive inventory movement. "
+                "Inventory is not lot-tracked, so these dates estimate the age of on-hand "
+                "stock; tiles without a recorded receipt are left unclassified."
+            ),
+        },
+        "top_materials": top_materials,
+        "top_corporate_buyers": [{
+            "company_name": buyer["company_name"],
+            "completed_orders": len(buyer["order_ids"]),
+            "revenue": (
+                round(buyer["revenue"], 2) if buyer["revenue_available"] else None
+            ),
+            "revenue_available": buyer["revenue_available"],
+        } for buyer in top_corporate_buyers],
+        "unattributed_corporate_orders": unattributed_corporate_orders,
+        "material_note": (
+            "Volumes and revenue use quotation lines explicitly linked to completed orders. "
+            "Orders with multiple linked quotations are excluded to avoid double-counting."
+        ),
     }
 
 

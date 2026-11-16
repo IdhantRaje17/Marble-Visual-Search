@@ -29,6 +29,24 @@ type SavedQuotation = QuotationPdf & {
   id: number;
   status: string;
   created_by_email: string;
+  search_id: number | null;
+  order_id: number | null;
+};
+
+type LinkOptions = {
+  searches: {
+    id: number;
+    status: string;
+    searched_at: string | null;
+    tile_sku: string | null;
+    tile_name: string | null;
+  }[];
+  orders: {
+    id: number;
+    status: string;
+    placed_at: string | null;
+    buyer_name: string;
+  }[];
 };
 
 const gstDefault = 18;
@@ -52,11 +70,17 @@ const money = (value: number) =>
 export default function QuotationsPage() {
   const [quotations, setQuotations] = useState<SavedQuotation[]>([]);
   const [tiles, setTiles] = useState<CatalogTile[]>([]);
+  const [linkOptions, setLinkOptions] = useState<LinkOptions>({ searches: [], orders: [] });
   const [tileQuery, setTileQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [linkingOrderId, setLinkingOrderId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [linkOptionsError, setLinkOptionsError] = useState("");
+  const [linkError, setLinkError] = useState("");
+  const [selectedSearchId, setSelectedSearchId] = useState("");
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Record<number, string>>({});
   const [client, setClient] = useState({
     client_name: "",
     company_name: "",
@@ -72,14 +96,45 @@ export default function QuotationsPage() {
     api.get<SavedQuotation[]>("/api/quotations").then(({ data }) => setQuotations(data));
 
   useEffect(() => {
-    Promise.all([
-      loadQuotations(),
-      api.get<CatalogTile[]>("/api/tiles/", { params: { is_active: true, limit: 200 } }),
-    ]).then(([, tileResponse]) => {
-      setTiles(tileResponse.data.filter((tile) => tile.is_active));
-    }).catch(() => {
-      setError("Quotations could not be loaded.");
-    }).finally(() => setLoading(false));
+    let cancelled = false;
+
+    // Match the Catalog page's direct authenticated list request. Each request
+    // is independent so a quotation-history failure cannot erase catalog tiles.
+    api.get<CatalogTile[]>("/api/tiles/?is_active=true&limit=500")
+      .then(({ data }) => {
+        if (!cancelled) {
+          const activeTiles = Array.isArray(data)
+            ? data.filter((tile) => tile.is_active === true)
+            : [];
+          setTiles(activeTiles);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("Catalog tiles could not be loaded.");
+      });
+
+    loadQuotations()
+      .catch(() => {
+        if (!cancelled) setError((current) => current || "Saved quotations could not be loaded.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    api.get<LinkOptions>("/api/admin/link-options")
+      .then(({ data }) => {
+        if (!cancelled) {
+          setLinkOptions({
+            searches: Array.isArray(data.searches) ? data.searches : [],
+            orders: Array.isArray(data.orders) ? data.orders : [],
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLinkOptionsError("Search and order link options could not be loaded.");
+      });
+
+    return () => { cancelled = true; };
   }, []);
 
   const filteredTiles = useMemo(() => {
@@ -164,6 +219,7 @@ export default function QuotationsPage() {
         phone: client.phone.trim() || null,
         address: client.address.trim() || null,
         gst_rate: gstRate,
+        search_id: selectedSearchId ? Number(selectedSearchId) : null,
         items: parsedLines.map((line) => ({
           tile_id: line.tile.id,
           quantity: line.quantity,
@@ -173,12 +229,58 @@ export default function QuotationsPage() {
       });
       setNotice(`Saved ${data.quotation_number}. This quotation did not place an order or change stock.`);
       setLines([]);
+      setSelectedSearchId("");
       await loadQuotations();
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(typeof detail === "string" ? detail : "Quotation could not be saved.");
+      const detail = (err as {
+        response?: {
+          data?: {
+            detail?: string | Array<{ msg?: string }>;
+          };
+        };
+      })?.response?.data?.detail;
+      setError(
+        typeof detail === "string"
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((item) => item.msg).filter(Boolean).join(", ") || "Quotation could not be saved."
+            : "Quotation could not be saved."
+      );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const linkOrderToQuotation = async (quotation: SavedQuotation) => {
+    const selectedOrderId = selectedOrderIds[quotation.id]
+      ?? (quotation.order_id == null ? "" : String(quotation.order_id));
+    setLinkError("");
+    setNotice("");
+    setLinkingOrderId(quotation.id);
+    try {
+      const { data } = await api.patch<SavedQuotation>(
+        `/api/quotations/${quotation.id}/links`,
+        { order_id: selectedOrderId ? Number(selectedOrderId) : null },
+      );
+      setQuotations((current) => current.map((item) =>
+        item.id === quotation.id ? data : item
+      ));
+      setSelectedOrderIds((current) => ({
+        ...current,
+        [quotation.id]: data.order_id == null ? "" : String(data.order_id),
+      }));
+      setNotice(
+        data.order_id == null
+          ? `Removed the order link from ${data.quotation_number}.`
+          : `Linked ${data.quotation_number} to order #${data.order_id}.`,
+      );
+    } catch (err: unknown) {
+      const detail = (err as {
+        response?: { data?: { detail?: string } };
+      })?.response?.data?.detail;
+      setLinkError(detail || "The order link could not be saved.");
+    } finally {
+      setLinkingOrderId(null);
     }
   };
 
@@ -196,6 +298,7 @@ export default function QuotationsPage() {
 
       {error && <p role="alert" className="border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</p>}
       {notice && <p className="border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">{notice}</p>}
+      {linkError && <p role="alert" className="border border-red-200 bg-red-50 p-3 text-sm text-red-800">{linkError}</p>}
 
       <section className="border border-stone-200 bg-white p-5">
         <h2 className="font-semibold text-stone-900">Client and project</h2>
@@ -209,7 +312,24 @@ export default function QuotationsPage() {
           <label className="sm:col-span-2 text-xs text-stone-600">Address
             <textarea value={client.address} onChange={(event) => setClient((current) => ({ ...current, address: event.target.value }))} className="mt-1 w-full rounded border border-stone-300 px-3 py-2 text-sm" rows={2} />
           </label>
+          <label className="sm:col-span-2 text-xs text-stone-600">Related visual search (optional)
+            <select
+              value={selectedSearchId}
+              onChange={(event) => setSelectedSearchId(event.target.value)}
+              className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">No search linked</option>
+              {linkOptions.searches.map((search) => (
+                <option key={search.id} value={search.id}>
+                  Search #{search.id} · {search.tile_sku || search.status}
+                  {search.searched_at ? ` · ${new Date(search.searched_at).toLocaleString()}` : ""}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px] text-stone-500">Choose the visual search that led to this quotation.</span>
+          </label>
         </div>
+        {linkOptionsError && <p role="alert" className="mt-2 text-xs text-amber-800">{linkOptionsError}</p>}
       </section>
 
       <section className="border border-stone-200 bg-white p-5">
@@ -307,7 +427,9 @@ export default function QuotationsPage() {
                     <p className="text-xs text-stone-500">
                       {quotation.company_name || "No company"} · {quotation.project_name || "No project"} · {quotation.status} · {new Date(quotation.created_at).toLocaleString()} · valid until {new Date(quotation.valid_until).toLocaleDateString()}
                     </p>
-                    <p className="text-xs text-stone-500">Prepared by {quotation.created_by_name}</p>
+                    <p className="text-xs text-stone-500">
+                      Prepared by {quotation.created_by_name} · {quotation.search_id == null ? "No linked search" : `Search #${quotation.search_id}`}
+                    </p>
                   </div>
                   <div className="text-right">
                     <p className="font-semibold">{money(quotation.grand_total)}</p>
@@ -315,6 +437,52 @@ export default function QuotationsPage() {
                       Download PDF
                     </button>
                   </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-stone-100 pt-3">
+                  <label className="min-w-64 flex-1 text-xs text-stone-600">
+                    Related order (optional)
+                    <select
+                      value={selectedOrderIds[quotation.id] ?? (quotation.order_id == null ? "" : String(quotation.order_id))}
+                      onChange={(event) => setSelectedOrderIds((current) => ({
+                        ...current,
+                        [quotation.id]: event.target.value,
+                      }))}
+                      className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2 text-sm"
+                    >
+                      <option value="">No order linked</option>
+                      {linkOptions.orders.map((order) => {
+                        const linkedElsewhere = quotations.some(
+                          (other) => other.id !== quotation.id && other.order_id === order.id,
+                        );
+                        const isCurrentLink = quotation.order_id === order.id;
+                        return (
+                          <option
+                            key={order.id}
+                            value={order.id}
+                            disabled={linkedElsewhere && !isCurrentLink}
+                          >
+                            Order #{order.id} · {order.buyer_name} · {order.status}
+                            {linkedElsewhere && !isCurrentLink ? " · already linked" : ""}
+                            {order.placed_at ? ` · ${new Date(order.placed_at).toLocaleDateString()}` : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void linkOrderToQuotation(quotation)}
+                    disabled={linkingOrderId === quotation.id || (
+                      (selectedOrderIds[quotation.id] ?? (quotation.order_id == null ? "" : String(quotation.order_id)))
+                      === (quotation.order_id == null ? "" : String(quotation.order_id))
+                    )}
+                    className="rounded border border-stone-300 px-3 py-2 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                  >
+                    {linkingOrderId === quotation.id ? "Saving..." : "Save order link"}
+                  </button>
+                  <p className="basis-full text-[11px] text-stone-500">
+                    Link the buyer&apos;s order here after it is placed. The conversion report counts it once the order is paid, completed, or delivered.
+                  </p>
                 </div>
                 <ul className="mt-3 divide-y divide-stone-100 text-sm">
                   {quotation.items.map((item) => (

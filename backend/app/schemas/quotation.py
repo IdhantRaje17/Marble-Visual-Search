@@ -19,6 +19,8 @@ class QuotationCreate(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     address: str | None = Field(default=None, max_length=2000)
     gst_rate: float = Field(default=18, ge=0, le=100, allow_inf_nan=False)
+    search_id: int | None = Field(default=None, gt=0)
+    order_id: int | None = Field(default=None, gt=0)
     items: list[QuotationItemCreate] = Field(min_length=1, max_length=100)
 
     @field_validator(
@@ -62,6 +64,8 @@ class QuotationItemOut(BaseModel):
 class QuotationOut(BaseModel):
     id: int
     quotation_number: str
+    search_id: int | None = None
+    order_id: int | None = None
     created_by: int
     created_by_name: str
     created_by_email: str

@@ -19,6 +19,9 @@ from app.models import search_log
 from app.models import cart as cart_models  # registers Cart/CartItem/Order/OrderItem tables
 from app.models import order_tracking as order_tracking_models
 from app.models import quotation as quotation_models
+from app.models import factory as factory_models
+from app.models import inventory_movement as inventory_movement_models
+from app.models import chat as chat_models
 
 # Import routers
 from app.routers import auth
@@ -31,6 +34,7 @@ from app.routers.inventory import router as inv_router
 from app.routers.inventory import loc_router
 from app.routers import cart as cart_router
 from app.routers import quotations as quotations_router
+from app.routers import chat as chat_router
 from ai.search import get_model
 
 # Ensure pgvector extension and index exist (PostgreSQL)
@@ -42,6 +46,21 @@ with engine.connect() as connection:
 
 # Create tables
 Base.metadata.create_all(bind=engine)
+
+# PostgreSQL create_all does not alter columns on existing tables. Quotation
+# support previously had a partial schema, so repair those compatible columns
+# before starting the API.
+try:
+    from migrate_quotations import migrate as migrate_quotations
+    migrate_quotations()
+except Exception as e:
+    print(f"Warning: quotation migration could not run: {e}")
+
+try:
+    from migrate_factory_analytics import migrate as migrate_factory_analytics
+    migrate_factory_analytics()
+except Exception as e:
+    print(f"Warning: factory analytics migration could not run: {e}")
 
 # Create pgvector index only if extension is available
 pgvector_enabled = os.getenv("PGVECTOR_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -89,6 +108,7 @@ app.include_router(loc_router)
 app.include_router(search.router)
 app.include_router(cart_router.router)
 app.include_router(quotations_router.router)
+app.include_router(chat_router.router)
 
 
 @app.on_event("startup")

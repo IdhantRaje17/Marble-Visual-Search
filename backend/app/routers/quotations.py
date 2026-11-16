@@ -2,12 +2,15 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import get_db
 from app.middleware.auth import get_current_admin
 from app.models.admin import Admin
 from app.models.quotation import Quotation, QuotationItem
 from app.models.tile import Tile
+from app.models.search_log import SearchLog
+from app.models.cart import Order
 from app.schemas.quotation import QuotationCreate, QuotationOut
 
 router = APIRouter(prefix="/api/quotations", tags=["Quotations"])
@@ -27,6 +30,8 @@ def _serialize(quotation: Quotation) -> dict:
     return {
         "id": quotation.id,
         "quotation_number": quotation.quotation_number,
+        "search_id": quotation.search_id,
+        "order_id": quotation.order_id,
         "created_by": quotation.created_by,
         "created_by_name": quotation.creator.name if quotation.creator else "Unknown",
         "created_by_email": quotation.creator.email if quotation.creator else "",
@@ -96,12 +101,43 @@ def get_quotation(
     return _serialize(quotation)
 
 
+@router.patch("/{quotation_id}/links", response_model=QuotationOut)
+def update_quotation_links(
+    quotation_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    _: Admin = Depends(get_current_admin),
+):
+    quotation = _load_query(db).filter(Quotation.id == quotation_id).first()
+    if not quotation:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    if "search_id" in body:
+        search_id = body["search_id"]
+        if search_id is not None and not db.query(SearchLog).filter(SearchLog.id == search_id).first():
+            raise HTTPException(status_code=422, detail="Search record not found")
+        quotation.search_id = search_id
+    if "order_id" in body:
+        order_id = body["order_id"]
+        if order_id is not None and not db.query(Order).filter(Order.id == order_id).first():
+            raise HTTPException(status_code=422, detail="Order record not found")
+        quotation.order_id = order_id
+    db.commit()
+    quotation = _load_query(db).filter(Quotation.id == quotation_id).one()
+    return _serialize(quotation)
+
+
 @router.post("", response_model=QuotationOut, status_code=201)
 def create_quotation(
     body: QuotationCreate,
     db: Session = Depends(get_db),
     account: Admin = Depends(get_current_admin),
 ):
+    if body.search_id is not None:
+        if not db.query(SearchLog).filter(SearchLog.id == body.search_id).first():
+            raise HTTPException(status_code=422, detail="Search record not found.")
+    if body.order_id is not None:
+        if not db.query(Order).filter(Order.id == body.order_id).first():
+            raise HTTPException(status_code=422, detail="Order record not found.")
     tile_ids = {item.tile_id for item in body.items}
     tiles = {
         tile.id: tile
@@ -119,6 +155,8 @@ def create_quotation(
 
     quotation = Quotation(
         created_by=account.id,
+        search_id=body.search_id,
+        order_id=body.order_id,
         client_name=body.client_name,
         company_name=body.company_name,
         project_name=body.project_name,
@@ -153,9 +191,16 @@ def create_quotation(
     quotation.subtotal = round(subtotal, 2)
     quotation.gst_amount = round(quotation.subtotal * quotation.gst_rate / 100, 2)
     quotation.grand_total = round(quotation.subtotal + quotation.gst_amount, 2)
-    db.add(quotation)
-    db.flush()
-    quotation.quotation_number = f"QT-{quotation.id:06d}"
-    db.commit()
-    quotation = _load_query(db).filter(Quotation.id == quotation.id).one()
-    return _serialize(quotation)
+    try:
+        db.add(quotation)
+        db.flush()
+        quotation.quotation_number = f"QT-{quotation.id:06d}"
+        db.commit()
+        quotation = _load_query(db).filter(Quotation.id == quotation.id).one()
+        return _serialize(quotation)
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Quotation could not be saved. The database could not complete the save.",
+        )

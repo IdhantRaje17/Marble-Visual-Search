@@ -219,6 +219,13 @@ export default function InventoryPage() {
   const lowCount = inventory.filter(
     (i) => i.quantity <= i.low_stock_threshold
   ).length;
+  const colorOptions = Array.from(
+    new Set(
+      Object.values(tiles)
+        .map((tile) => tile.color_family?.name)
+        .filter((name): name is string => Boolean(name))
+    )
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <div>
@@ -263,7 +270,25 @@ export default function InventoryPage() {
         ] as const).map(([key, label]) => (
           <label key={key} className="text-xs font-medium text-stone-600">
             {label}
-            <input value={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.value }))} placeholder={`Filter ${label.toLowerCase()}`} className="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-normal text-stone-800" />
+            {key === "color" ? (
+              <select
+                value={filters.color}
+                onChange={(event) => setFilters((current) => ({ ...current, color: event.target.value }))}
+                className="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-normal text-stone-800"
+              >
+                <option value="">All colors</option>
+                {colorOptions.map((color) => (
+                  <option key={color} value={color}>{color}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={filters[key]}
+                onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.value }))}
+                placeholder={`Filter ${label.toLowerCase()}`}
+                className="mt-1 w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-normal text-stone-800"
+              />
+            )}
           </label>
         ))}
       </section>
