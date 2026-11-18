@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 interface TileResult {
   tile_id: number;
   sku: string;
@@ -55,7 +57,7 @@ export default function TileResultCard({
 }) {
   const { label, colorClass } = getMatchLabel(result.confidence);
   const imageUrl = result.image_url
-    ? `http://localhost:8000${result.image_url}`
+    ? `${API_BASE_URL}${result.image_url}`
     : null;
 
   // Show multi-image evidence indicator when relevant

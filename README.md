@@ -55,6 +55,10 @@ cd frontend
 npm install
 npm run dev
 ```
+For deployment, set `NEXT_PUBLIC_API_URL` to the backend's public base URL in
+Vercel. Set `FRONTEND_URL` in the backend environment to the frontend's exact
+origin (for example, `https://your-site.vercel.app`) so browser API requests
+pass CORS checks.
 
 ## Environment Variables
 See `backend/.env.example`

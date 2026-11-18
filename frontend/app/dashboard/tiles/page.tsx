@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import { Plus, Pencil, X, Check, Power, PowerOff, Trash2, AlertTriangle, Loader2 } from "lucide-react";
 
 interface Category { id: number; name: string; }
@@ -508,7 +508,7 @@ export default function TilesPage() {
                                     bg-stone-100 border border-stone-200">
                       {tile.images?.[0] ? (
                         <img
-                          src={`http://localhost:8000${tile.images[0].image_url}`}
+                          src={`${API_BASE_URL}${tile.images[0].image_url}`}
                           alt={tile.name}
                           className="w-full h-full object-cover"
                         />

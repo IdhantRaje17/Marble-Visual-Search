@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Activity, Boxes, Loader2, Package, Plus } from "lucide-react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import { type Analytics, formatInr, rangeParams } from "@/lib/analytics";
 
 type CatalogTile = { id: number; sku: string; name: string; is_active: boolean };
@@ -225,7 +225,7 @@ export default function FactoryAnalyticsPage() {
                             aria-label={`${item.name} tile`}
                             className={`flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded bg-stone-100 text-2xl text-stone-300 ${item.image_url ? "bg-cover bg-center" : ""}`}
                             style={item.image_url ? {
-                              backgroundImage: `url("http://localhost:8000${item.image_url}")`,
+                              backgroundImage: `url("${API_BASE_URL}${item.image_url}")`,
                             } : undefined}
                           >
                             {!item.image_url && "◆"}

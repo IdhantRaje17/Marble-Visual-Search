@@ -1,6 +1,6 @@
 "use client";
 import { Fragment, useEffect, useState } from "react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import { getRole } from "@/lib/auth";
 import { Check, Loader2, Pencil, X } from "lucide-react";
 
@@ -344,7 +344,7 @@ export default function InventoryPage() {
                                       flex-shrink-0">
                         {tile?.images?.[0] ? (
                           <img
-                            src={`http://localhost:8000${tile.images[0].image_url}`}
+                            src={`${API_BASE_URL}${tile.images[0].image_url}`}
                             className="w-full h-full object-cover"
                             alt={tile.name}
                           />

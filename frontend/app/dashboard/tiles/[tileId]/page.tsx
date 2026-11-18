@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import axios from "axios";
 import { ArrowLeft, Loader2, Package, ShoppingCart, Check, Minus, Plus, Pencil, Save, X } from "lucide-react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import { getRole } from "@/lib/auth";
 
 type Category = { id: number; name: string; is_active?: boolean; hex_code?: string | null };
@@ -343,9 +343,9 @@ function TileDetailsContent({ params }: { params: Promise<{ tileId: string }> })
       <div className="grid gap-8 lg:grid-cols-[1.05fr_1fr]">
         <section className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
           <div className="aspect-square overflow-hidden rounded-lg bg-stone-100">
-            {images[0] ? <img src={`http://localhost:8000${images[0].image_url}`} alt={tile.name} className="h-full w-full object-contain" /> : <div className="flex h-full items-center justify-center text-6xl text-stone-300">◆</div>}
+            {images[0] ? <img src={`${API_BASE_URL}${images[0].image_url}`} alt={tile.name} className="h-full w-full object-contain" /> : <div className="flex h-full items-center justify-center text-6xl text-stone-300">◆</div>}
           </div>
-          {images.length > 1 && <div className="mt-3 grid grid-cols-5 gap-2">{images.slice(0, 5).map((image) => <img key={image.id} src={`http://localhost:8000${image.image_url}`} alt="" className="aspect-square rounded border border-stone-200 object-cover" />)}</div>}
+          {images.length > 1 && <div className="mt-3 grid grid-cols-5 gap-2">{images.slice(0, 5).map((image) => <img key={image.id} src={`${API_BASE_URL}${image.image_url}`} alt="" className="aspect-square rounded border border-stone-200 object-cover" />)}</div>}
         </section>
         <section className="space-y-6">
           <div className="flex items-start justify-between gap-4">

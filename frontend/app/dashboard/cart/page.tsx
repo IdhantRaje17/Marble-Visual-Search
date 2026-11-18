@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import OrderSuccessToast from "@/components/OrderSuccessToast";
 import { Trash2, Plus, Minus, ShoppingCart, Loader2, PackageX } from "lucide-react";
 
@@ -171,7 +171,7 @@ export default function CartPage() {
             {cart!.items.map((item) => {
               const busy = updatingItems.has(item.id);
               const imageUrl = item.tile_image_url
-                ? `http://localhost:8000${item.tile_image_url}`
+                ? `${API_BASE_URL}${item.tile_image_url}`
                 : null;
 
               return (

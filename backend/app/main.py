@@ -83,10 +83,22 @@ else:
 app = FastAPI(title="Marble AI API", version="1.0.0")
 
 # ── CORS ────────────────────────────────────────────────
-# Allow only local development origins with credentials.
+cors_origins = {
+    "https://marble-visual-search-yqhm.vercel.app",
+}
+cors_origins.update(
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
+frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+if frontend_url:
+    cors_origins.add(frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001","https://marble-visual-search-yqhm.vercel.app"],
+    allow_origins=list(cors_origins),
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
