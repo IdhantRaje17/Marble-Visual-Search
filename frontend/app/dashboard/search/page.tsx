@@ -32,6 +32,8 @@ type UploadedImage = {
   croppedBlob?: Blob; // cropped file data
 };
 
+type CropSelection = { x: number; y: number; width: number; height: number };
+
 // ─── Constants ────────────────────────────────────────────
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -55,8 +57,18 @@ function CropModal({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const dragRef = useRef<{
+    mode: "draw" | "move" | "resize";
+    start: { x: number; y: number };
+    original: CropSelection;
+    corner?: "nw" | "ne" | "sw" | "se";
+  } | null>(null);
   const [scale, setScale] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [freehandMode, setFreehandMode] = useState(false);
+  const [freehandSelection, setFreehandSelection] = useState<CropSelection>({
+    x: 0.1, y: 0.1, width: 0.8, height: 0.8,
+  });
   // Crop region as fraction of image (0–1)
   const [cropX, setCropX] = useState(0.1);
   const [cropY, setCropY] = useState(0.1);
@@ -65,6 +77,18 @@ function CropModal({
 
   const PREVIEW_W = 340;
   const PREVIEW_H = 340;
+
+  const getImageBounds = (img: HTMLImageElement) => {
+    const ratio = Math.min(PREVIEW_W / img.naturalWidth, PREVIEW_H / img.naturalHeight);
+    const width = img.naturalWidth * ratio;
+    const height = img.naturalHeight * ratio;
+    return {
+      x: (PREVIEW_W - width) / 2,
+      y: (PREVIEW_H - height) / 2,
+      width,
+      height,
+    };
+  };
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -76,6 +100,40 @@ function CropModal({
     canvas.width = PREVIEW_W;
     canvas.height = PREVIEW_H;
     ctx.clearRect(0, 0, PREVIEW_W, PREVIEW_H);
+
+    if (freehandMode) {
+      const bounds = getImageBounds(img);
+      const selection = {
+        x: bounds.x + freehandSelection.x * bounds.width,
+        y: bounds.y + freehandSelection.y * bounds.height,
+        width: freehandSelection.width * bounds.width,
+        height: freehandSelection.height * bounds.height,
+      };
+      ctx.drawImage(img, bounds.x, bounds.y, bounds.width, bounds.height);
+      ctx.fillStyle = "rgba(15, 23, 42, 0.48)";
+      ctx.fillRect(bounds.x, bounds.y, bounds.width, selection.y - bounds.y);
+      ctx.fillRect(bounds.x, selection.y + selection.height, bounds.width,
+        bounds.y + bounds.height - selection.y - selection.height);
+      ctx.fillRect(bounds.x, selection.y, selection.x - bounds.x, selection.height);
+      ctx.fillRect(selection.x + selection.width, selection.y,
+        bounds.x + bounds.width - selection.x - selection.width, selection.height);
+      ctx.strokeStyle = "rgba(6,182,212,0.95)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(selection.x, selection.y, selection.width, selection.height);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "rgba(6,182,212,0.95)";
+      for (const [x, y] of [
+        [selection.x, selection.y],
+        [selection.x + selection.width, selection.y],
+        [selection.x, selection.y + selection.height],
+        [selection.x + selection.width, selection.y + selection.height],
+      ]) {
+        ctx.fillRect(x - 4, y - 4, 8, 8);
+        ctx.strokeRect(x - 4, y - 4, 8, 8);
+      }
+      return;
+    }
 
     const imgW = img.naturalWidth;
     const imgH = img.naturalHeight;
@@ -96,7 +154,7 @@ function CropModal({
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 3]);
     ctx.strokeRect(10, 10, PREVIEW_W - 20, PREVIEW_H - 20);
-  }, [cropX, cropY, cropW, cropH, scale, rotation]);
+  }, [cropX, cropY, cropW, cropH, scale, rotation, freehandMode, freehandSelection]);
 
   useEffect(() => {
     const img = imgRef.current;
@@ -108,6 +166,23 @@ function CropModal({
   const handleConfirm = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (freehandMode) {
+      const img = imgRef.current;
+      if (!img) return;
+      const output = document.createElement("canvas");
+      const sx = Math.round(freehandSelection.x * img.naturalWidth);
+      const sy = Math.round(freehandSelection.y * img.naturalHeight);
+      const sw = Math.max(1, Math.round(freehandSelection.width * img.naturalWidth));
+      const sh = Math.max(1, Math.round(freehandSelection.height * img.naturalHeight));
+      output.width = sw;
+      output.height = sh;
+      output.getContext("2d")?.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      output.toBlob((blob) => {
+        if (!blob) return;
+        onConfirm(output.toDataURL("image/jpeg", 0.92), blob);
+      }, "image/jpeg", 0.92);
+      return;
+    }
     canvas.toBlob((blob) => {
       if (!blob) return;
       const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
@@ -122,6 +197,116 @@ function CropModal({
     setCropY(0.1);
     setCropW(0.8);
     setCropH(0.8);
+    setFreehandSelection({ x: 0.1, y: 0.1, width: 0.8, height: 0.8 });
+  };
+
+  const getPointerPosition = (
+    event: React.PointerEvent<HTMLCanvasElement>,
+    clampToImage = false,
+  ) => {
+    const canvas = canvasRef.current;
+    const img = imgRef.current;
+    if (!canvas || !img) return null;
+    const rect = canvas.getBoundingClientRect();
+    const bounds = getImageBounds(img);
+    let x = (event.clientX - rect.left) * PREVIEW_W / rect.width;
+    let y = (event.clientY - rect.top) * PREVIEW_H / rect.height;
+    if (clampToImage) {
+      x = Math.max(bounds.x, Math.min(bounds.x + bounds.width, x));
+      y = Math.max(bounds.y, Math.min(bounds.y + bounds.height, y));
+    }
+    if (x < bounds.x || x > bounds.x + bounds.width
+      || y < bounds.y || y > bounds.y + bounds.height) return null;
+    return {
+      x: (x - bounds.x) / bounds.width,
+      y: (y - bounds.y) / bounds.height,
+    };
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!freehandMode) return;
+    const point = getPointerPosition(event);
+    const img = imgRef.current;
+    if (!point || !img) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const selection = freehandSelection;
+    const imageBounds = getImageBounds(img);
+    const horizontalHandleDistance = 12 / imageBounds.width;
+    const verticalHandleDistance = 12 / imageBounds.height;
+    const corners = [
+      { name: "nw" as const, x: selection.x, y: selection.y },
+      { name: "ne" as const, x: selection.x + selection.width, y: selection.y },
+      { name: "sw" as const, x: selection.x, y: selection.y + selection.height },
+      { name: "se" as const, x: selection.x + selection.width, y: selection.y + selection.height },
+    ];
+    const corner = corners.find((candidate) =>
+      Math.abs(point.x - candidate.x) <= horizontalHandleDistance
+      && Math.abs(point.y - candidate.y) <= verticalHandleDistance
+    );
+    const insideSelection = point.x >= selection.x
+      && point.x <= selection.x + selection.width
+      && point.y >= selection.y
+      && point.y <= selection.y + selection.height;
+    const mode = corner ? "resize" : insideSelection ? "move" : "draw";
+    dragRef.current = { mode, start: point, original: selection, corner: corner?.name };
+    if (mode === "draw") {
+      setFreehandSelection({ x: point.x, y: point.y, width: 0, height: 0 });
+    }
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!freehandMode || !drag) return;
+    const point = getPointerPosition(event, true);
+    if (!point) return;
+    if (drag.mode === "draw") {
+      setFreehandSelection({
+        x: Math.min(drag.start.x, point.x),
+        y: Math.min(drag.start.y, point.y),
+        width: Math.abs(point.x - drag.start.x),
+        height: Math.abs(point.y - drag.start.y),
+      });
+      return;
+    }
+    if (drag.mode === "move") {
+      setFreehandSelection({
+        ...drag.original,
+        x: Math.max(0, Math.min(1 - drag.original.width,
+          drag.original.x + point.x - drag.start.x)),
+        y: Math.max(0, Math.min(1 - drag.original.height,
+          drag.original.y + point.y - drag.start.y)),
+      });
+      return;
+    }
+
+    const left = drag.corner === "nw" || drag.corner === "sw";
+    const top = drag.corner === "nw" || drag.corner === "ne";
+    const originalRight = drag.original.x + drag.original.width;
+    const originalBottom = drag.original.y + drag.original.height;
+    const minSize = 0.02;
+    const x = left
+      ? Math.min(point.x, originalRight - minSize)
+      : drag.original.x;
+    const right = left
+      ? originalRight
+      : Math.max(point.x, drag.original.x + minSize);
+    const y = top
+      ? Math.min(point.y, originalBottom - minSize)
+      : drag.original.y;
+    const bottom = top
+      ? originalBottom
+      : Math.max(point.y, drag.original.y + minSize);
+    setFreehandSelection({
+      x: Math.max(0, x),
+      y: Math.max(0, y),
+      width: Math.min(1, right) - Math.max(0, x),
+      height: Math.min(1, bottom) - Math.max(0, y),
+    });
+  };
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (dragRef.current) handlePointerMove(event);
+    dragRef.current = null;
   };
 
   return (
@@ -133,12 +318,34 @@ function CropModal({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img ref={imgRef} src={image.preview} alt="" className="hidden" onLoad={draw} />
 
+        <div className="mb-2 flex justify-end">
+          <button
+            type="button"
+            aria-pressed={freehandMode}
+            onClick={() => setFreehandMode((enabled) => !enabled)}
+            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+              freehandMode
+                ? "border-cyan-600 bg-cyan-50 text-cyan-800"
+                : "border-stone-300 text-stone-600 hover:bg-stone-50"
+            }`}
+          >
+            {freehandMode ? "Freehand crop on" : "Freehand crop"}
+          </button>
+        </div>
+        {freehandMode && (
+          <p className="mb-2 text-xs text-stone-500">Drag on the image to select an area, then drag inside to move it or drag a corner to resize.</p>
+        )}
         <div className="flex justify-center mb-4 rounded-xl overflow-hidden border border-stone-200">
           <canvas ref={canvasRef} width={PREVIEW_W} height={PREVIEW_H}
-                  className="block" style={{ maxWidth: "100%" }} />
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  onPointerCancel={handlePointerUp}
+                  className={`block ${freehandMode ? "cursor-crosshair touch-none" : ""}`}
+                  style={{ maxWidth: "100%" }} />
         </div>
 
-        <div className="space-y-2 mb-4">
+        {!freehandMode && <div className="space-y-2 mb-4">
           <SliderRow label="Zoom" value={scale} min={0.5} max={3} step={0.05}
                      onChange={(v) => { setScale(v); draw(); }} />
           <SliderRow label="Rotation" value={rotation} min={-180} max={180} step={1}
@@ -151,7 +358,7 @@ function CropModal({
                      onChange={(v) => { setCropW(v); draw(); }} />
           <SliderRow label="Crop Height" value={cropH} min={0.2} max={1} step={0.01}
                      onChange={(v) => { setCropH(v); draw(); }} />
-        </div>
+        </div>}
 
         <div className="flex gap-3 justify-end">
           <button onClick={reset}
